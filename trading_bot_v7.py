@@ -79,7 +79,6 @@ ET                         = ZoneInfo("America/New_York")
 # ---------------------------------------------------------------------------
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 data_client    = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-stream_client: StockDataStream = StockDataStream(API_KEY, SECRET_KEY, feed=DATA_FEED)
 
 log.info("Loading FinBERT sentiment model... (~30 s)")
 sentiment_analyzer = pipeline(
@@ -501,24 +500,25 @@ async def restart_stream():
 # ---------------------------------------------------------------------------
 # 14. WATCHDOG
 # ---------------------------------------------------------------------------
-async def watchdog_loop():
-    log.info(f"Watchdog armed - timeout: {WATCHDOG_TIMEOUT_SECONDS}s")
-    while True:
-        await asyncio.sleep(WATCHDOG_POLL_SECONDS)
-        if not is_market_open():
-            global _last_bar_time
-            _last_bar_time = time.monotonic()
-            continue
-        silence = time.monotonic() - _last_bar_time
-        if silence > WATCHDOG_TIMEOUT_SECONDS:
-            msg = f"WATCHDOG TRIGGERED - No bars for {silence:.0f}s. Restarting stream..."
-            log.critical(msg)
-            await send_alert(msg)
-            await restart_stream()
-        else:
-            log.debug(f"Watchdog OK - last bar {silence:.0f}s ago.")
-
-
+async def main_loop():
+    global _stream_task, _last_bar_time, stream_client
+    log.info("=== Trading Bot v7 Starting (VPS) ===")
+    await send_alert("Bot v7 booted - paper trading active.")
+    _reset_circuit_breaker_if_new_day()
+    await bootstrap_buffers()
+    log.info("Pre-warming sentiment cache...")
+    await asyncio.gather(*[get_cached_sentiment(t) for t in WATCHLIST])
+    log.info("Sentiment cache ready.")
+    stream_client = StockDataStream(API_KEY, SECRET_KEY, feed=DATA_FEED)
+    stream_client.subscribe_bars(bar_handler, *WATCHLIST)
+    log.info(f"Subscribed to live bars: {WATCHLIST}")
+    _last_bar_time = time.monotonic()
+    _stream_task   = asyncio.create_task(stream_client.run())
+    await asyncio.gather(
+        _stream_task,
+        asyncio.create_task(watchdog_loop()),
+    )
+    
 # ---------------------------------------------------------------------------
 # 15. MAIN
 # ---------------------------------------------------------------------------
