@@ -1,0 +1,9 @@
+alpaca-py
+pandas
+pandas-ta
+httpx
+tenacity
+transformers
+torch
+yfinance
+python-dotenv
