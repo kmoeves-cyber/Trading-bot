@@ -492,7 +492,7 @@ async def restart_stream():
     stream_client = StockDataStream(API_KEY, SECRET_KEY, feed=DATA_FEED)
     stream_client.subscribe_bars(bar_handler, *WATCHLIST)
     _last_bar_time = time.monotonic()
-    _stream_task   = asyncio.create_task(stream_client.run())
+    _stream_task   = asyncio.create_task(stream_client.run_forever())
     log.info("Stream restarted.")
     await send_alert("Stream restarted - WebSocket reconnected.")
 
@@ -534,7 +534,7 @@ async def main_loop():
     stream_client.subscribe_bars(bar_handler, *WATCHLIST)
     log.info(f"Subscribed to live bars: {WATCHLIST}")
     _last_bar_time = time.monotonic()
-    _stream_task   = asyncio.create_task(stream_client.run())
+    _stream_task   = asyncio.create_task(stream_client.run_forever())
     await asyncio.gather(
         _stream_task,
         asyncio.create_task(watchdog_loop()),
