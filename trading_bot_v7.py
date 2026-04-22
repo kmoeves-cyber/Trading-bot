@@ -26,6 +26,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 
 # ---------------------------------------------------------------------------
 # 0. LOGGING
@@ -70,7 +71,7 @@ MIN_BARS_FOR_SIGNAL        = 30
 SENTIMENT_CACHE_MINUTES    = 10
 WATCHDOG_TIMEOUT_SECONDS   = 180
 WATCHDOG_POLL_SECONDS      = 60
-DATA_FEED                  = "iex"
+DATA_FEED                  = DataFeed.IEX
 ET                         = ZoneInfo("America/New_York")
 
 # ---------------------------------------------------------------------------
