@@ -53,12 +53,15 @@ DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")  # None if not set
 WATCHLIST = ["NVDA", "TSLA", "AMD", "AAPL", "META", "MSFT", "SPY", "QQQ"]
 
 RISK_CONFIG = {
-    "account_risk_pct":      0.01,
-    "atr_stop_mult":         2.0,
-    "min_score_to_buy":      12.0,
-    "max_open_positions":    3,
-    "max_position_notional": 50_000,
-    "limit_slippage_pct":    0.0005,
+    "account_risk_pct":        0.01,
+    "atr_stop_mult":           2.0,
+    "min_score_to_buy":        12.0,
+    "max_open_positions":      3,
+    "max_position_notional":   50_000,
+    "limit_slippage_pct":      0.0005,
+    "hold_overnight_min_gain": 0.02,
+    "gap_down_close_pct":      0.03,
+    "trailing_stop_pct":       0.02,
 }
 
 CIRCUIT_BREAKER_CONFIG = {
@@ -211,6 +214,24 @@ def is_market_open() -> bool:
     return open_t <= now < close_t
 
 
+def is_near_close() -> bool:
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    eod_check = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    close_t   = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return eod_check <= now < close_t
+
+
+def is_just_opened() -> bool:
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    open_t       = now.replace(hour=9,  minute=31, second=0, microsecond=0)
+    open_t_end   = now.replace(hour=9,  minute=35, second=0, microsecond=0)
+    return open_t <= now < open_t_end
+
+
 # ---------------------------------------------------------------------------
 # 6. BUFFER BOOTSTRAP
 # ---------------------------------------------------------------------------
@@ -339,6 +360,162 @@ def compute_trade_score(last, sentiment: float):
 # ---------------------------------------------------------------------------
 # 10. ORDER FILL TRACKER
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HYBRID TRADING — TRAILING STOP UPDATER
+# ---------------------------------------------------------------------------
+async def update_trailing_stops():
+    try:
+        positions = await asyncio.to_thread(fetch_positions_safe)
+        for p in positions:
+            entry    = float(p.avg_entry_price)
+            current  = float(p.current_price)
+            gain_pct = (current - entry) / entry
+            if gain_pct < 0.01:
+                continue
+            new_stop = round(current * (1 - RISK_CONFIG["trailing_stop_pct"]), 2)
+            try:
+                from alpaca.trading.requests import ReplaceOrderRequest
+                orders = await asyncio.to_thread(
+                    trading_client.get_orders
+                )
+                for order in orders:
+                    if (
+                        order.symbol == p.symbol
+                        and order.order_class is not None
+                        and str(order.order_class) == "bracket"
+                    ):
+                        replace_req = ReplaceOrderRequest(stop_price=new_stop)
+                        await asyncio.to_thread(
+                            trading_client.replace_order_by_id,
+                            order.id,
+                            replace_req,
+                        )
+                        log.info(
+                            f"[{p.symbol}] Trailing stop updated to "
+                            f"${new_stop:.2f} (gain: {gain_pct*100:.1f}%)"
+                        )
+            except Exception as exc:
+                log.debug(f"[{p.symbol}] Trailing stop update skipped: {exc}")
+    except Exception as exc:
+        log.error(f"Trailing stop updater error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# HYBRID TRADING — END OF DAY POSITION MANAGER
+# ---------------------------------------------------------------------------
+async def end_of_day_manager():
+    log.info("End of day check running at 3:45 PM ET...")
+    try:
+        positions = await asyncio.to_thread(fetch_positions_safe)
+        if not positions:
+            log.info("EOD: No open positions to evaluate.")
+            return
+        for p in positions:
+            symbol   = p.symbol
+            entry    = float(p.avg_entry_price)
+            current  = float(p.current_price)
+            gain_pct = (current - entry) / entry
+            threshold = RISK_CONFIG["hold_overnight_min_gain"]
+            if gain_pct >= threshold:
+                log.info(
+                    f"[{symbol}] EOD: Holding overnight - "
+                    f"gain {gain_pct*100:.2f}% >= {threshold*100:.0f}% threshold"
+                )
+                await send_alert(
+                    f"HOLDING OVERNIGHT: {symbol}\n"
+                    f"Gain: +{gain_pct*100:.2f}% - letting winner run."
+                )
+            else:
+                log.info(
+                    f"[{symbol}] EOD: Closing position - "
+                    f"gain {gain_pct*100:.2f}% below {threshold*100:.0f}% threshold"
+                )
+                try:
+                    from alpaca.trading.requests import MarketOrderRequest
+                    close_order = MarketOrderRequest(
+                        symbol=symbol,
+                        qty=float(p.qty),
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.DAY,
+                    )
+                    await asyncio.to_thread(trading_client.submit_order, close_order)
+                    _trade_history.append({
+                        "time":   datetime.now(ET).strftime("%H:%M:%S"),
+                        "symbol": symbol,
+                        "qty":    float(p.qty),
+                        "entry":  entry,
+                        "tp":     current,
+                        "sl":     current,
+                        "status": "eod_closed",
+                    })
+                    if len(_trade_history) > 20:
+                        _trade_history.pop(0)
+                    await send_alert(
+                        f"EOD CLOSED: {symbol}\n"
+                        f"Entry: ${entry:.2f} | Exit: ${current:.2f}\n"
+                        f"Return: {gain_pct*100:.2f}%"
+                    )
+                except Exception as exc:
+                    log.error(f"[{symbol}] EOD close failed: {exc}")
+    except Exception as exc:
+        log.error(f"EOD manager error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# HYBRID TRADING — MORNING GAP CHECK
+# ---------------------------------------------------------------------------
+async def morning_gap_check():
+    log.info("Morning gap check running at 9:31 AM ET...")
+    try:
+        positions = await asyncio.to_thread(fetch_positions_safe)
+        if not positions:
+            log.info("Gap check: No overnight positions.")
+            return
+        for p in positions:
+            symbol   = p.symbol
+            entry    = float(p.avg_entry_price)
+            current  = float(p.current_price)
+            gap_pct  = (current - entry) / entry
+            threshold = -RISK_CONFIG["gap_down_close_pct"]
+            if gap_pct <= threshold:
+                log.warning(
+                    f"[{symbol}] GAP DOWN {gap_pct*100:.2f}% - closing immediately"
+                )
+                try:
+                    from alpaca.trading.requests import MarketOrderRequest
+                    close_order = MarketOrderRequest(
+                        symbol=symbol,
+                        qty=float(p.qty),
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.DAY,
+                    )
+                    await asyncio.to_thread(trading_client.submit_order, close_order)
+                    _trade_history.append({
+                        "time":   datetime.now(ET).strftime("%H:%M:%S"),
+                        "symbol": symbol,
+                        "qty":    float(p.qty),
+                        "entry":  entry,
+                        "tp":     current,
+                        "sl":     current,
+                        "status": "gap_closed",
+                    })
+                    if len(_trade_history) > 20:
+                        _trade_history.pop(0)
+                    await send_alert(
+                        f"GAP DOWN CLOSE: {symbol}\n"
+                        f"Entry: ${entry:.2f} | Gap price: ${current:.2f}\n"
+                        f"Loss: {gap_pct*100:.2f}%"
+                    )
+                except Exception as exc:
+                    log.error(f"[{symbol}] Gap close failed: {exc}")
+            else:
+                log.info(
+                    f"[{symbol}] Gap check OK - {gap_pct*100:.2f}% from entry"
+                )
+    except Exception as exc:
+        log.error(f"Morning gap check error: {exc}")
+
 async def track_order_fill(
     ticker: str, order_id: str, qty: int,
     limit_price: float, sl_price: float, tp_price: float,
@@ -526,12 +703,22 @@ async def restart_stream():
 # ---------------------------------------------------------------------------
 async def watchdog_loop():
     log.info(f"Watchdog armed - timeout: {WATCHDOG_TIMEOUT_SECONDS}s")
+    _eod_done_date    = None
+    _gap_done_date    = None
     while True:
         await asyncio.sleep(WATCHDOG_POLL_SECONDS)
+        now  = datetime.now(ET)
+        today = now.date()
         if not is_market_open():
             global _last_bar_time
             _last_bar_time = time.monotonic()
             continue
+        if is_just_opened() and _gap_done_date != today:
+            _gap_done_date = today
+            await morning_gap_check()
+        if is_near_close() and _eod_done_date != today:
+            _eod_done_date = today
+            await end_of_day_manager()
         silence = time.monotonic() - _last_bar_time
         if silence > WATCHDOG_TIMEOUT_SECONDS:
             msg = f"WATCHDOG TRIGGERED - No bars for {silence:.0f}s. Restarting stream..."
@@ -595,7 +782,7 @@ async def write_status_file():
 async def main_loop():
     global _stream_task, _last_bar_time, stream_client
     log.info("=== Trading Bot v7 Starting (VPS) ===")
-    await send_alert("Bot v7 booted - paper trading active.")
+    await send_alert("Bot v7 booted - hybrid trading active.")
     _reset_circuit_breaker_if_new_day()
     await bootstrap_buffers()
     log.info("Pre-warming sentiment cache...")
@@ -610,7 +797,16 @@ async def main_loop():
         _stream_task,
         asyncio.create_task(watchdog_loop()),
         asyncio.create_task(write_status_file()),
+        asyncio.create_task(trailing_stop_loop()),
     )
+
+
+async def trailing_stop_loop():
+    log.info("Trailing stop loop started.")
+    while True:
+        await asyncio.sleep(60)
+        if is_market_open():
+            await update_trailing_stops()
 
 
 # ---------------------------------------------------------------------------
