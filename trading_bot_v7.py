@@ -1,3 +1,5 @@
+import json
+import subprocess
 import asyncio
 import logging
 import os
@@ -92,8 +94,11 @@ _bar_buffers: dict[str, deque] = {
     ticker: deque(maxlen=BAR_BUFFER_SIZE) for ticker in WATCHLIST
 }
 _pending_orders: dict[str, asyncio.Task] = {}
+_latest_scores: dict = {}
+_trade_history: list = []
 _last_bar_time: float             = time.monotonic()
 _stream_task: asyncio.Task | None = None
+stream_client: StockDataStream | None = None
 
 # ---------------------------------------------------------------------------
 # CIRCUIT BREAKER STATE
@@ -356,6 +361,17 @@ async def track_order_fill(
             if status == OrderStatus.FILLED:
                 filled_price = float(order.filled_avg_price or limit_price)
                 _cb_state["trades_today"] += 1
+                _trade_history.append({
+                    "time":       datetime.now(ET).strftime("%H:%M:%S"),
+                    "symbol":     ticker,
+                    "qty":        qty,
+                    "entry":      filled_price,
+                    "sl":         sl_price,
+                    "tp":         tp_price,
+                    "status":     "filled",
+                })
+                if len(_trade_history) > 20:
+                    _trade_history.pop(0)
                 log.info(f"[{ticker}] FILLED at ${filled_price:.2f} | trades today: {_cb_state['trades_today']}")
                 await send_alert(
                     f"ORDER FILLED: {qty}x {ticker} @ ${filled_price:.2f}\n"
@@ -466,6 +482,14 @@ async def bar_handler(bar):
     if pd.isna(atr) or atr <= 0:
         atr = 1.0
     price = round(float(last["Close"]), 2)
+    _latest_scores[ticker] = {
+        "score":     round(score, 2),
+        "rsi":       round(breakdown.get("rsi", 0), 2),
+        "macd":      round(breakdown.get("macd", 0), 2),
+        "vwap":      round(breakdown.get("vwap", 0), 2),
+        "sentiment": round(breakdown.get("sentiment", 0), 2),
+        "price":     price,
+    }
     log.info(
         f"[{ticker}] close=${price:.2f}  score={score:.2f}  "
         f"rsi={breakdown.get('rsi', 0):.1f}  "
@@ -492,13 +516,81 @@ async def restart_stream():
     stream_client = StockDataStream(API_KEY, SECRET_KEY, feed=DATA_FEED)
     stream_client.subscribe_bars(bar_handler, *WATCHLIST)
     _last_bar_time = time.monotonic()
-    _stream_task   = asyncio.create_task(stream_client.run_forever())
+    _stream_task   = asyncio.create_task(stream_client._run_forever())
     log.info("Stream restarted.")
     await send_alert("Stream restarted - WebSocket reconnected.")
 
 
 # ---------------------------------------------------------------------------
 # 14. WATCHDOG
+# ---------------------------------------------------------------------------
+async def watchdog_loop():
+    log.info(f"Watchdog armed - timeout: {WATCHDOG_TIMEOUT_SECONDS}s")
+    while True:
+        await asyncio.sleep(WATCHDOG_POLL_SECONDS)
+        if not is_market_open():
+            global _last_bar_time
+            _last_bar_time = time.monotonic()
+            continue
+        silence = time.monotonic() - _last_bar_time
+        if silence > WATCHDOG_TIMEOUT_SECONDS:
+            msg = f"WATCHDOG TRIGGERED - No bars for {silence:.0f}s. Restarting stream..."
+            log.critical(msg)
+            await send_alert(msg)
+            await restart_stream()
+        else:
+            log.debug(f"Watchdog OK - last bar {silence:.0f}s ago.")
+
+
+# ---------------------------------------------------------------------------
+# 15. STATUS FILE WRITER
+# ---------------------------------------------------------------------------
+async def write_status_file():
+    while True:
+        try:
+            account   = await asyncio.to_thread(fetch_account_safe)
+            positions = await asyncio.to_thread(fetch_positions_safe)
+            position_data = []
+            for p in positions:
+                position_data.append({
+                    "symbol":    p.symbol,
+                    "qty":       float(p.qty),
+                    "entry":     float(p.avg_entry_price),
+                    "current":   float(p.current_price),
+                    "pl_dollar": float(p.unrealized_pl),
+                    "pl_pct":    float(p.unrealized_plpc) * 100,
+                })
+            status = {
+                "bot_active":      True,
+                "last_update":     datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
+                "equity":          float(account.equity),
+                "cash":            float(account.cash),
+                "circuit_breaker": _cb_state.get("is_tripped", False),
+                "trades_today":    _cb_state.get("trades_today", 0),
+                "max_trades":      CIRCUIT_BREAKER_CONFIG["daily_max_trades"],
+                "session_start":   _cb_state.get("session_start_equity"),
+                "open_positions":  position_data,
+                "ticker_scores":   _latest_scores,
+                "trade_history":   _trade_history,
+                "watchlist":       WATCHLIST,
+                "market_open":     is_market_open(),
+            }
+        except Exception:
+            status = {
+                "bot_active":  False,
+                "last_update": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
+                "market_open": is_market_open(),
+            }
+        try:
+            with open("status.json", "w") as f:
+                json.dump(status, f)
+        except Exception as exc:
+            log.warning(f"Status file write failed: {exc}")
+        await asyncio.sleep(30)
+
+
+# ---------------------------------------------------------------------------
+# 16. MAIN
 # ---------------------------------------------------------------------------
 async def main_loop():
     global _stream_task, _last_bar_time, stream_client
@@ -513,31 +605,11 @@ async def main_loop():
     stream_client.subscribe_bars(bar_handler, *WATCHLIST)
     log.info(f"Subscribed to live bars: {WATCHLIST}")
     _last_bar_time = time.monotonic()
-    _stream_task   = asyncio.create_task(stream_client.run())
+    _stream_task   = asyncio.create_task(stream_client._run_forever())
     await asyncio.gather(
         _stream_task,
         asyncio.create_task(watchdog_loop()),
-    )
-    
-# ---------------------------------------------------------------------------
-# 15. MAIN
-# ---------------------------------------------------------------------------
-async def main_loop():
-    global _stream_task, _last_bar_time
-    log.info("=== Trading Bot v7 Starting (VPS) ===")
-    await send_alert("Bot v7 booted - paper trading active.")
-    _reset_circuit_breaker_if_new_day()
-    await bootstrap_buffers()
-    log.info("Pre-warming sentiment cache...")
-    await asyncio.gather(*[get_cached_sentiment(t) for t in WATCHLIST])
-    log.info("Sentiment cache ready.")
-    stream_client.subscribe_bars(bar_handler, *WATCHLIST)
-    log.info(f"Subscribed to live bars: {WATCHLIST}")
-    _last_bar_time = time.monotonic()
-    _stream_task   = asyncio.create_task(stream_client.run_forever())
-    await asyncio.gather(
-        _stream_task,
-        asyncio.create_task(watchdog_loop()),
+        asyncio.create_task(write_status_file()),
     )
 
 
