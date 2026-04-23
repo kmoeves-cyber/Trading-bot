@@ -1,0 +1,13 @@
+[Unit]
+Description=Trading Bot Dashboard
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/root/Trading-bot
+ExecStart=/root/Trading-bot/venv/bin/python /root/Trading-bot/dashboard.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
