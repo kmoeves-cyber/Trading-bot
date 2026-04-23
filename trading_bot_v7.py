@@ -50,7 +50,7 @@ API_KEY         = os.getenv("ALPACA_API_KEY", "YOUR_API_KEY_HERE")
 SECRET_KEY      = os.getenv("ALPACA_SECRET_KEY", "YOUR_SECRET_KEY_HERE")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")  # None if not set
 
-WATCHLIST = ["NVDA", "TSLA", "AMD", "AAPL", "META"]
+WATCHLIST = ["NVDA", "TSLA", "AMD", "AAPL", "META", "MSFT", "SPY", "QQQ"]
 
 RISK_CONFIG = {
     "account_risk_pct":      0.01,
