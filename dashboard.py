@@ -1,10 +1,32 @@
 import html
 import json
 import os
-from flask import Flask, jsonify, render_template_string, request
+import sqlite3
+from datetime import datetime
+from functools import wraps
+from flask import Flask, jsonify, render_template_string, request, Response
 import subprocess
 
 app = Flask(__name__)
+
+DASHBOARD_USER = os.getenv("DASHBOARD_USER", "")
+DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "")
+
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not DASHBOARD_USER or not DASHBOARD_PASS:
+            return f(*args, **kwargs)
+        auth = request.authorization
+        if not auth or auth.username != DASHBOARD_USER or auth.password != DASHBOARD_PASS:
+            return Response(
+                "Authentication required.",
+                401,
+                {"WWW-Authenticate": 'Basic realm="Trading Bot"'},
+            )
+        return f(*args, **kwargs)
+    return decorated
 
 BASE   = "/root/Trading-bot"
 STATUS = os.path.join(BASE, "status.json")
@@ -29,6 +51,32 @@ def read_logs(n=60):
             return [html.escape(line.strip()) for line in f.readlines()[-n:]]
     except Exception:
         return []
+
+
+def read_performance() -> dict:
+    try:
+        db_file = os.path.join(BASE, "trades.db")
+        with sqlite3.connect(db_file) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+            today = datetime.now().strftime("%Y-%m-%d")
+            by_status = conn.execute(
+                "SELECT status, COUNT(*) FROM trades GROUP BY status"
+            ).fetchall()
+            today_rows = conn.execute(
+                "SELECT status, COUNT(*) FROM trades WHERE date=? GROUP BY status",
+                (today,)
+            ).fetchall()
+            equity_hist = conn.execute(
+                "SELECT equity FROM equity_snapshots ORDER BY id DESC LIMIT 100"
+            ).fetchall()
+        return {
+            "all_time_trades": total,
+            "all_time_by_status": {s: c for s, c in by_status},
+            "today_by_status":    {s: c for s, c in today_rows},
+            "equity_history":     [row[0] for row in reversed(equity_hist)],
+        }
+    except Exception:
+        return {}
 
 
 TEMPLATE = """
@@ -217,12 +265,6 @@ function render(d) {
     banner.innerHTML = '&#x23F8; MARKET CLOSED &nbsp;|&nbsp; Next open 9:30 AM ET';
   }
 
-  // equity chart
-  if(s.equity) {
-    equityHistory.push(parseFloat(s.equity));
-    if(equityHistory.length > 50) equityHistory.shift();
-  }
-
   // equity change
   let changeHtml = '';
   if(s.session_start && s.equity) {
@@ -306,7 +348,32 @@ function render(d) {
     logHtml += `<div class="${cls}">${line}</div>`;
   });
 
+  // performance stats
+  const perf = d.performance || {};
+  const allTime = perf.all_time_by_status || {};
+  const todaySt = perf.today_by_status   || {};
+  const perfHtml = perf.all_time_trades !== undefined ? `
+    <div class="row"><span class="label">All-time Trades</span><span class="value">${perf.all_time_trades}</span></div>
+    <div class="row"><span class="label">Filled (all)</span><span class="value green">${allTime.filled || 0}</span></div>
+    <div class="row"><span class="label">EOD Closed (all)</span><span class="value yellow">${allTime.eod_closed || 0}</span></div>
+    <div class="row"><span class="label">Gap Closed (all)</span><span class="value red">${allTime.gap_closed || 0}</span></div>
+    <div style="border-top:1px solid #21262d;margin:8px 0"></div>
+    <div class="row"><span class="label">Today Filled</span><span class="value green">${todaySt.filled || 0}</span></div>
+    <div class="row"><span class="label">Today EOD Closed</span><span class="value yellow">${todaySt.eod_closed || 0}</span></div>
+    <div class="row"><span class="label">Today Gap Closed</span><span class="value red">${todaySt.gap_closed || 0}</span></div>
+  ` : '<p style="color:#8b949e;font-size:13px;text-align:center;padding:8px">No trade data yet</p>';
+
+  // use DB equity history when available, otherwise fallback to in-memory
+  if(perf.equity_history && perf.equity_history.length > equityHistory.length) {
+    equityHistory = perf.equity_history.slice();
+  } else if(s.equity) {
+    equityHistory.push(parseFloat(s.equity));
+    if(equityHistory.length > 100) equityHistory.shift();
+  }
+
   const tradesPct = s.max_trades ? (s.trades_today / s.max_trades * 100) : 0;
+  const modeTag   = s.paper_mode ? '<span style="font-size:11px;color:#d29922;border:1px solid #d29922;border-radius:4px;padding:1px 6px;margin-left:8px">PAPER</span>'
+                                 : '<span style="font-size:11px;color:#f85149;border:1px solid #f85149;border-radius:4px;padding:1px 6px;margin-left:8px">LIVE</span>';
 
   document.getElementById('app').innerHTML = `
     <div class="card ${cb ? 'cb-tripped' : ''}">
@@ -314,6 +381,7 @@ function render(d) {
       <div class="status-row">
         <span class="status-dot ${active ? 'dot-green' : 'dot-red'}"></span>
         ${active ? '<span class="green">ACTIVE</span>' : '<span class="red">OFFLINE</span>'}
+        ${modeTag}
         ${cb ? '<span class="red" style="margin-left:auto;font-size:12px">&#x26A0; CIRCUIT BREAKER TRIPPED</span>' : ''}
       </div>
       <div class="row" style="margin-top:10px">
@@ -355,6 +423,11 @@ function render(d) {
     </div>
 
     <div class="card">
+      <div class="card-title">Performance Stats</div>
+      ${perfHtml}
+    </div>
+
+    <div class="card">
       <div class="card-title">Live Log</div>
       <div class="log-box">${logHtml}</div>
     </div>
@@ -378,16 +451,23 @@ setInterval(tick, 1000);
 
 
 @app.route("/")
+@require_auth
 def index():
     return render_template_string(TEMPLATE)
 
 
 @app.route("/api/data")
+@require_auth
 def api_data():
-    return jsonify({"status": read_status(), "logs": read_logs(60)})
+    return jsonify({
+        "status":      read_status(),
+        "logs":        read_logs(60),
+        "performance": read_performance(),
+    })
 
 
 @app.route("/api/stop", methods=["POST"])
+@require_auth
 def stop_bot():
     try:
         result = subprocess.run(
