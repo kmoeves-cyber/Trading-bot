@@ -1,5 +1,5 @@
 import json
-import subprocess
+import signal
 import asyncio
 import logging
 import os
@@ -14,12 +14,17 @@ import pandas_ta as ta
 import httpx
 import yfinance as yf
 from dotenv import load_dotenv
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import (
+    retry, wait_exponential, stop_after_attempt,
+    retry_if_exception_type, retry_if_not_exception_type,
+)
 from transformers import pipeline
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     LimitOrderRequest,
+    MarketOrderRequest,
+    ReplaceOrderRequest,
     TakeProfitRequest,
     StopLossRequest,
 )
@@ -46,9 +51,14 @@ log = logging.getLogger("TradingBot_v7")
 # ---------------------------------------------------------------------------
 load_dotenv()
 
-API_KEY         = os.getenv("ALPACA_API_KEY", "YOUR_API_KEY_HERE")
-SECRET_KEY      = os.getenv("ALPACA_SECRET_KEY", "YOUR_SECRET_KEY_HERE")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")  # None if not set
+API_KEY         = os.getenv("ALPACA_API_KEY", "")
+SECRET_KEY      = os.getenv("ALPACA_SECRET_KEY", "")
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+
+if not API_KEY or not SECRET_KEY:
+    raise EnvironmentError(
+        "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set in environment or .env file."
+    )
 
 WATCHLIST = ["NVDA", "TSLA", "AMD", "AAPL", "META", "MSFT", "SPY", "QQQ"]
 
@@ -112,6 +122,7 @@ _cb_state = {
     "trades_today":         0,
     "is_tripped":           False,
 }
+_cb_lock = asyncio.Lock()
 
 
 def _clear_buffers_for_new_day():
@@ -166,22 +177,22 @@ async def check_circuit_breaker(current_equity: float) -> bool:
 # ---------------------------------------------------------------------------
 # 3. RETRY HELPERS
 # ---------------------------------------------------------------------------
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def fetch_account_safe():
     return trading_client.get_account()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def fetch_positions_safe():
     return trading_client.get_all_positions()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def fetch_order_safe(order_id: str):
     return trading_client.get_order_by_id(order_id)
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def cancel_order_safe(order_id: str):
     return trading_client.cancel_order_by_id(order_id)
 
@@ -285,7 +296,8 @@ def compute_indicators(df: pd.DataFrame):
         df.ta.macd(append=True)
         df.ta.atr(length=14, append=True)
         return df.iloc[-1]
-    except Exception:
+    except Exception as exc:
+        log.warning(f"compute_indicators failed: {exc}")
         return None
 
 
@@ -320,7 +332,8 @@ def _compute_sentiment_blocking(ticker: str) -> float:
             elif res["label"] == "negative": scores.append(-res["score"])
             else:                            scores.append(0.0)
         return sum(scores) / len(scores)
-    except Exception:
+    except Exception as exc:
+        log.warning(f"Sentiment computation failed for {ticker}: {exc}")
         return 0.0
 
 
@@ -375,7 +388,6 @@ async def update_trailing_stops():
                 continue
             new_stop = round(current * (1 - RISK_CONFIG["trailing_stop_pct"]), 2)
             try:
-                from alpaca.trading.requests import ReplaceOrderRequest
                 orders = await asyncio.to_thread(
                     trading_client.get_orders
                 )
@@ -432,7 +444,6 @@ async def end_of_day_manager():
                     f"gain {gain_pct*100:.2f}% below {threshold*100:.0f}% threshold"
                 )
                 try:
-                    from alpaca.trading.requests import MarketOrderRequest
                     close_order = MarketOrderRequest(
                         symbol=symbol,
                         qty=float(p.qty),
@@ -483,7 +494,6 @@ async def morning_gap_check():
                     f"[{symbol}] GAP DOWN {gap_pct*100:.2f}% - closing immediately"
                 )
                 try:
-                    from alpaca.trading.requests import MarketOrderRequest
                     close_order = MarketOrderRequest(
                         symbol=symbol,
                         qty=float(p.qty),
@@ -537,7 +547,8 @@ async def track_order_fill(
             status = order.status
             if status == OrderStatus.FILLED:
                 filled_price = float(order.filled_avg_price or limit_price)
-                _cb_state["trades_today"] += 1
+                async with _cb_lock:
+                    _cb_state["trades_today"] += 1
                 _trade_history.append({
                     "time":       datetime.now(ET).strftime("%H:%M:%S"),
                     "symbol":     ticker,
@@ -586,12 +597,12 @@ async def maybe_execute(ticker: str, score: float, price: float, atr: float):
         return
     if ticker in _pending_orders and not _pending_orders[ticker].done():
         return
-    account        = fetch_account_safe()
+    account        = await asyncio.to_thread(fetch_account_safe)
     current_equity = float(account.equity)
     _reset_circuit_breaker_if_new_day()
     if await check_circuit_breaker(current_equity):
         return
-    open_positions = fetch_positions_safe()
+    open_positions = await asyncio.to_thread(fetch_positions_safe)
     open_symbols   = {p.symbol for p in open_positions}
     if ticker in open_symbols:
         return
@@ -762,7 +773,8 @@ async def write_status_file():
                 "watchlist":       WATCHLIST,
                 "market_open":     is_market_open(),
             }
-        except Exception:
+        except Exception as exc:
+            log.error(f"Status fetch failed: {exc}")
             status = {
                 "bot_active":  False,
                 "last_update": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
@@ -813,7 +825,22 @@ async def trailing_stop_loop():
 # ENTRY POINT — VPS / Linux (no nest_asyncio needed)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    async def _run():
+        loop = asyncio.get_running_loop()
+
+        def _shutdown():
+            log.info("Shutdown signal received — cancelling all tasks...")
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+
+        loop.add_signal_handler(signal.SIGTERM, _shutdown)
+        loop.add_signal_handler(signal.SIGINT, _shutdown)
+        try:
+            await main_loop()
+        except asyncio.CancelledError:
+            log.info("Bot stopped gracefully.")
+
     try:
-        asyncio.run(main_loop())
+        asyncio.run(_run())
     except KeyboardInterrupt:
         log.info("Bot stopped by user.")

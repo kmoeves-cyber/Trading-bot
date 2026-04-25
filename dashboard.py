@@ -1,3 +1,4 @@
+import html
 import json
 import os
 from flask import Flask, jsonify, render_template_string, request
@@ -14,7 +15,7 @@ def read_status():
     try:
         with open(STATUS) as f:
             return json.load(f)
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError):
         return {
             "bot_active":  False,
             "last_update": "unavailable",
@@ -25,7 +26,7 @@ def read_status():
 def read_logs(n=60):
     try:
         with open(LOG) as f:
-            return [line.strip() for line in f.readlines()[-n:]]
+            return [html.escape(line.strip()) for line in f.readlines()[-n:]]
     except Exception:
         return []
 
@@ -389,11 +390,18 @@ def api_data():
 @app.route("/api/stop", methods=["POST"])
 def stop_bot():
     try:
-        subprocess.Popen(["sudo", "systemctl", "stop", "tradingbot.service"])
+        result = subprocess.run(
+            ["sudo", "systemctl", "stop", "tradingbot.service"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return jsonify({"success": False, "error": result.stderr.strip()})
         return jsonify({"success": True})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "systemctl command timed out"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="127.0.0.1", port=5000, debug=False)
