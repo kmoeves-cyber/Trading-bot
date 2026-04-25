@@ -1,5 +1,6 @@
 import json
-import subprocess
+import signal
+import sqlite3
 import asyncio
 import logging
 import os
@@ -14,12 +15,17 @@ import pandas_ta as ta
 import httpx
 import yfinance as yf
 from dotenv import load_dotenv
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import (
+    retry, wait_exponential, stop_after_attempt,
+    retry_if_exception_type, retry_if_not_exception_type,
+)
 from transformers import pipeline
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     LimitOrderRequest,
+    MarketOrderRequest,
+    ReplaceOrderRequest,
     TakeProfitRequest,
     StopLossRequest,
 )
@@ -46,9 +52,21 @@ log = logging.getLogger("TradingBot_v7")
 # ---------------------------------------------------------------------------
 load_dotenv()
 
-API_KEY         = os.getenv("ALPACA_API_KEY", "YOUR_API_KEY_HERE")
-SECRET_KEY      = os.getenv("ALPACA_SECRET_KEY", "YOUR_SECRET_KEY_HERE")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")  # None if not set
+API_KEY         = os.getenv("ALPACA_API_KEY", "")
+SECRET_KEY      = os.getenv("ALPACA_SECRET_KEY", "")
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+
+if not API_KEY or not SECRET_KEY:
+    raise EnvironmentError(
+        "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set in environment or .env file."
+    )
+
+TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
+if TRADING_MODE not in ("paper", "live"):
+    raise EnvironmentError("TRADING_MODE must be 'paper' or 'live'.")
+IS_PAPER     = TRADING_MODE != "live"
+CONFIG_FILE  = "config.json"
+DB_FILE      = "trades.db"
 
 WATCHLIST = ["NVDA", "TSLA", "AMD", "AAPL", "META", "MSFT", "SPY", "QQQ"]
 
@@ -69,6 +87,35 @@ CIRCUIT_BREAKER_CONFIG = {
     "daily_max_trades":         10,
 }
 
+
+def _load_config_file() -> dict:
+    try:
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError as exc:
+        log.error(f"Invalid {CONFIG_FILE}: {exc}")
+        return {}
+
+
+def _apply_config(cfg: dict, *, startup: bool = False):
+    global WATCHLIST
+    if startup and "watchlist" in cfg:
+        WATCHLIST = cfg["watchlist"]
+        log.info(f"Watchlist loaded from config: {WATCHLIST}")
+    if "risk" in cfg:
+        RISK_CONFIG.update(cfg["risk"])
+        if not startup:
+            log.info(f"Risk config hot-reloaded: {cfg['risk']}")
+    if "circuit_breaker" in cfg:
+        CIRCUIT_BREAKER_CONFIG.update(cfg["circuit_breaker"])
+        if not startup:
+            log.info(f"Circuit breaker config hot-reloaded: {cfg['circuit_breaker']}")
+
+
+_apply_config(_load_config_file(), startup=True)
+
 ORDER_FILL_TIMEOUT_SECONDS = 120
 ORDER_POLL_SECONDS         = 15
 BAR_BUFFER_SIZE            = 390
@@ -82,7 +129,7 @@ ET                         = ZoneInfo("America/New_York")
 # ---------------------------------------------------------------------------
 # 2. CLIENT INITIALIZATION
 # ---------------------------------------------------------------------------
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+trading_client = TradingClient(API_KEY, SECRET_KEY, paper=IS_PAPER)
 data_client    = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 log.info("Loading FinBERT sentiment model... (~30 s)")
@@ -104,6 +151,107 @@ _stream_task: asyncio.Task | None = None
 stream_client: StockDataStream | None = None
 
 # ---------------------------------------------------------------------------
+# DATABASE — SQLite persistence (trades, CB state, equity snapshots)
+# ---------------------------------------------------------------------------
+def _init_db():
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                date    TEXT NOT NULL,
+                time    TEXT NOT NULL,
+                symbol  TEXT NOT NULL,
+                qty     REAL NOT NULL,
+                entry   REAL NOT NULL,
+                tp      REAL,
+                sl      REAL,
+                status  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS session_state (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS equity_snapshots (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                equity    REAL NOT NULL
+            );
+        """)
+    log.info("Database initialised.")
+
+
+def _save_trade(trade: dict):
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute(
+                "INSERT INTO trades (date,time,symbol,qty,entry,tp,sl,status) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    datetime.now(ET).strftime("%Y-%m-%d"),
+                    trade["time"], trade["symbol"], trade["qty"],
+                    trade["entry"], trade.get("tp"), trade.get("sl"), trade["status"],
+                ),
+            )
+    except Exception as exc:
+        log.error(f"DB trade insert failed: {exc}")
+
+
+def _persist_cb_state():
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            for k, v in _cb_state.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO session_state (key, value) VALUES (?,?)",
+                    (k, json.dumps(v, default=str)),
+                )
+    except Exception as exc:
+        log.error(f"DB CB state persist failed: {exc}")
+
+
+def _restore_cb_state():
+    today = datetime.now(ET).date()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            rows = conn.execute("SELECT key, value FROM session_state").fetchall()
+        state = {k: json.loads(v) for k, v in rows}
+        if not state:
+            return
+        stored_str = state.get("session_date")
+        if not stored_str:
+            return
+        stored_date = datetime.strptime(stored_str, "%Y-%m-%d").date()
+        if stored_date != today:
+            log.info("Stored CB state is from a previous session — starting fresh.")
+            return
+        _cb_state["session_date"] = stored_date
+        for k in ("session_start_equity", "trades_today", "is_tripped"):
+            if k in state:
+                _cb_state[k] = state[k]
+        log.info(
+            f"CB state restored: trades_today={_cb_state['trades_today']}, "
+            f"is_tripped={_cb_state['is_tripped']}"
+        )
+    except Exception as exc:
+        log.warning(f"CB state restore failed (fresh start): {exc}")
+
+
+def _save_equity_snapshot(equity: float):
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute(
+                "INSERT INTO equity_snapshots (timestamp, equity) VALUES (?,?)",
+                (datetime.now(ET).isoformat(), equity),
+            )
+            conn.execute("""
+                DELETE FROM equity_snapshots WHERE id NOT IN (
+                    SELECT id FROM equity_snapshots ORDER BY id DESC LIMIT 500
+                )
+            """)
+    except Exception as exc:
+        log.error(f"DB equity snapshot failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # CIRCUIT BREAKER STATE
 # ---------------------------------------------------------------------------
 _cb_state = {
@@ -112,6 +260,7 @@ _cb_state = {
     "trades_today":         0,
     "is_tripped":           False,
 }
+_cb_lock = asyncio.Lock()
 
 
 def _clear_buffers_for_new_day():
@@ -128,6 +277,7 @@ def _reset_circuit_breaker_if_new_day():
         _cb_state["trades_today"]         = 0
         _cb_state["is_tripped"]           = False
         _clear_buffers_for_new_day()
+        _persist_cb_state()
         log.info(f"Circuit breaker reset for new session: {today}")
 
 
@@ -143,6 +293,7 @@ async def check_circuit_breaker(current_equity: float) -> bool:
     limit_pct    = CIRCUIT_BREAKER_CONFIG["daily_drawdown_limit_pct"]
     if drawdown_pct >= limit_pct:
         _cb_state["is_tripped"] = True
+        _persist_cb_state()
         msg = (
             f"CIRCUIT BREAKER TRIPPED - DRAWDOWN\n"
             f"Session start: ${start_equity:,.2f} | Current: ${current_equity:,.2f}\n"
@@ -153,6 +304,7 @@ async def check_circuit_breaker(current_equity: float) -> bool:
         return True
     if _cb_state["trades_today"] >= CIRCUIT_BREAKER_CONFIG["daily_max_trades"]:
         _cb_state["is_tripped"] = True
+        _persist_cb_state()
         msg = (
             f"CIRCUIT BREAKER TRIPPED - MAX TRADES\n"
             f"Executed {_cb_state['trades_today']} trades today."
@@ -166,22 +318,22 @@ async def check_circuit_breaker(current_equity: float) -> bool:
 # ---------------------------------------------------------------------------
 # 3. RETRY HELPERS
 # ---------------------------------------------------------------------------
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def fetch_account_safe():
     return trading_client.get_account()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def fetch_positions_safe():
     return trading_client.get_all_positions()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def fetch_order_safe(order_id: str):
     return trading_client.get_order_by_id(order_id)
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type(Exception))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_not_exception_type((ValueError, KeyError, AttributeError, TypeError)))
 def cancel_order_safe(order_id: str):
     return trading_client.cancel_order_by_id(order_id)
 
@@ -285,7 +437,8 @@ def compute_indicators(df: pd.DataFrame):
         df.ta.macd(append=True)
         df.ta.atr(length=14, append=True)
         return df.iloc[-1]
-    except Exception:
+    except Exception as exc:
+        log.warning(f"compute_indicators failed: {exc}")
         return None
 
 
@@ -320,7 +473,8 @@ def _compute_sentiment_blocking(ticker: str) -> float:
             elif res["label"] == "negative": scores.append(-res["score"])
             else:                            scores.append(0.0)
         return sum(scores) / len(scores)
-    except Exception:
+    except Exception as exc:
+        log.warning(f"Sentiment computation failed for {ticker}: {exc}")
         return 0.0
 
 
@@ -375,7 +529,6 @@ async def update_trailing_stops():
                 continue
             new_stop = round(current * (1 - RISK_CONFIG["trailing_stop_pct"]), 2)
             try:
-                from alpaca.trading.requests import ReplaceOrderRequest
                 orders = await asyncio.to_thread(
                     trading_client.get_orders
                 )
@@ -432,7 +585,6 @@ async def end_of_day_manager():
                     f"gain {gain_pct*100:.2f}% below {threshold*100:.0f}% threshold"
                 )
                 try:
-                    from alpaca.trading.requests import MarketOrderRequest
                     close_order = MarketOrderRequest(
                         symbol=symbol,
                         qty=float(p.qty),
@@ -451,6 +603,7 @@ async def end_of_day_manager():
                     })
                     if len(_trade_history) > 20:
                         _trade_history.pop(0)
+                    _save_trade(_trade_history[-1])
                     await send_alert(
                         f"EOD CLOSED: {symbol}\n"
                         f"Entry: ${entry:.2f} | Exit: ${current:.2f}\n"
@@ -483,7 +636,6 @@ async def morning_gap_check():
                     f"[{symbol}] GAP DOWN {gap_pct*100:.2f}% - closing immediately"
                 )
                 try:
-                    from alpaca.trading.requests import MarketOrderRequest
                     close_order = MarketOrderRequest(
                         symbol=symbol,
                         qty=float(p.qty),
@@ -502,6 +654,7 @@ async def morning_gap_check():
                     })
                     if len(_trade_history) > 20:
                         _trade_history.pop(0)
+                    _save_trade(_trade_history[-1])
                     await send_alert(
                         f"GAP DOWN CLOSE: {symbol}\n"
                         f"Entry: ${entry:.2f} | Gap price: ${current:.2f}\n"
@@ -537,7 +690,8 @@ async def track_order_fill(
             status = order.status
             if status == OrderStatus.FILLED:
                 filled_price = float(order.filled_avg_price or limit_price)
-                _cb_state["trades_today"] += 1
+                async with _cb_lock:
+                    _cb_state["trades_today"] += 1
                 _trade_history.append({
                     "time":       datetime.now(ET).strftime("%H:%M:%S"),
                     "symbol":     ticker,
@@ -549,6 +703,8 @@ async def track_order_fill(
                 })
                 if len(_trade_history) > 20:
                     _trade_history.pop(0)
+                _save_trade(_trade_history[-1])
+                _persist_cb_state()
                 log.info(f"[{ticker}] FILLED at ${filled_price:.2f} | trades today: {_cb_state['trades_today']}")
                 await send_alert(
                     f"ORDER FILLED: {qty}x {ticker} @ ${filled_price:.2f}\n"
@@ -586,12 +742,12 @@ async def maybe_execute(ticker: str, score: float, price: float, atr: float):
         return
     if ticker in _pending_orders and not _pending_orders[ticker].done():
         return
-    account        = fetch_account_safe()
+    account        = await asyncio.to_thread(fetch_account_safe)
     current_equity = float(account.equity)
     _reset_circuit_breaker_if_new_day()
     if await check_circuit_breaker(current_equity):
         return
-    open_positions = fetch_positions_safe()
+    open_positions = await asyncio.to_thread(fetch_positions_safe)
     open_symbols   = {p.symbol for p in open_positions}
     if ticker in open_symbols:
         return
@@ -747,10 +903,13 @@ async def write_status_file():
                     "pl_dollar": float(p.unrealized_pl),
                     "pl_pct":    float(p.unrealized_plpc) * 100,
                 })
+            equity = float(account.equity)
+            await asyncio.to_thread(_save_equity_snapshot, equity)
             status = {
                 "bot_active":      True,
                 "last_update":     datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
-                "equity":          float(account.equity),
+                "paper_mode":      IS_PAPER,
+                "equity":          equity,
                 "cash":            float(account.cash),
                 "circuit_breaker": _cb_state.get("is_tripped", False),
                 "trades_today":    _cb_state.get("trades_today", 0),
@@ -762,7 +921,8 @@ async def write_status_file():
                 "watchlist":       WATCHLIST,
                 "market_open":     is_market_open(),
             }
-        except Exception:
+        except Exception as exc:
+            log.error(f"Status fetch failed: {exc}")
             status = {
                 "bot_active":  False,
                 "last_update": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
@@ -779,10 +939,21 @@ async def write_status_file():
 # ---------------------------------------------------------------------------
 # 16. MAIN
 # ---------------------------------------------------------------------------
+async def config_reload_loop():
+    while True:
+        await asyncio.sleep(300)
+        try:
+            _apply_config(_load_config_file(), startup=False)
+        except Exception as exc:
+            log.warning(f"Config hot-reload failed: {exc}")
+
+
 async def main_loop():
     global _stream_task, _last_bar_time, stream_client
-    log.info("=== Trading Bot v7 Starting (VPS) ===")
-    await send_alert("Bot v7 booted - hybrid trading active.")
+    log.info(f"=== Trading Bot v7 Starting | mode={'PAPER' if IS_PAPER else '*** LIVE ***'} ===")
+    _init_db()
+    _restore_cb_state()
+    await send_alert(f"Bot v7 booted ({'paper' if IS_PAPER else 'LIVE'} mode).")
     _reset_circuit_breaker_if_new_day()
     await bootstrap_buffers()
     log.info("Pre-warming sentiment cache...")
@@ -798,6 +969,7 @@ async def main_loop():
         asyncio.create_task(watchdog_loop()),
         asyncio.create_task(write_status_file()),
         asyncio.create_task(trailing_stop_loop()),
+        asyncio.create_task(config_reload_loop()),
     )
 
 
@@ -813,7 +985,22 @@ async def trailing_stop_loop():
 # ENTRY POINT — VPS / Linux (no nest_asyncio needed)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    async def _run():
+        loop = asyncio.get_running_loop()
+
+        def _shutdown():
+            log.info("Shutdown signal received — cancelling all tasks...")
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+
+        loop.add_signal_handler(signal.SIGTERM, _shutdown)
+        loop.add_signal_handler(signal.SIGINT, _shutdown)
+        try:
+            await main_loop()
+        except asyncio.CancelledError:
+            log.info("Bot stopped gracefully.")
+
     try:
-        asyncio.run(main_loop())
+        asyncio.run(_run())
     except KeyboardInterrupt:
         log.info("Bot stopped by user.")
