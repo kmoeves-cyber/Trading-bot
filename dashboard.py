@@ -2,12 +2,18 @@ import html
 import json
 import os
 import sqlite3
-from datetime import datetime
+import threading
+from datetime import date, datetime
 from functools import wraps
 from flask import Flask, jsonify, render_template_string, request, Response
 import subprocess
+from backtest import (
+    BacktestEngine, init_backtest_db, create_run,
+    get_runs, get_run_details, DEFAULT_RISK, DEFAULT_CB,
+)
 
 app = Flask(__name__)
+init_backtest_db()
 
 DASHBOARD_USER = os.getenv("DASHBOARD_USER", "")
 DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "")
@@ -155,7 +161,7 @@ body.light .market-closed{background:#fff0ee;color:#cf222e;border-color:#cf222e}
 </style>
 </head>
 <body>
-<h1>&#x1F916; Bot HUD <button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀ Light</button></h1>
+<h1>&#x1F916; Bot HUD <a href="/backtest" style="font-size:12px;color:#58a6ff;margin-left:8px;text-decoration:none;font-weight:400">&#x1F4CA; Backtest</a><button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀ Light</button></h1>
 <div id="market-banner" class="market-banner market-closed">&#x23F0; Checking market...</div>
 <div id="stop-confirm" class="stop-confirm">
   <p>&#x26A0; Are you sure you want to stop the bot?<br>All open orders will remain open.</p>
@@ -481,6 +487,311 @@ def stop_bot():
         return jsonify({"success": False, "error": "systemctl command timed out"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# BACKTEST PAGE
+# ---------------------------------------------------------------------------
+BACKTEST_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backtest</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;padding:12px;max-width:720px;margin:0 auto}
+h1{font-size:18px;font-weight:700;margin-bottom:6px;color:#58a6ff;letter-spacing:1px;text-transform:uppercase}
+.nav{margin-bottom:14px;font-size:13px}.nav a{color:#58a6ff;text-decoration:none}
+.card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:14px;margin-bottom:12px}
+.card-title{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:10px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.form-group{margin-bottom:10px}
+.form-group label{display:block;font-size:11px;color:#8b949e;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px}
+.form-group input{width:100%;background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:8px;color:#e6edf3;font-size:13px}
+.run-btn{width:100%;padding:12px;background:#0d2540;border:1px solid #58a6ff;color:#58a6ff;font-size:14px;font-weight:700;border-radius:8px;cursor:pointer;letter-spacing:1px;margin-top:4px}
+.run-btn:disabled{opacity:0.4;cursor:not-allowed}
+.metric-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.metric-box{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:10px;text-align:center}
+.metric-val{font-size:20px;font-weight:700;margin-bottom:4px}
+.metric-lbl{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:1px}
+.green{color:#3fb950}.red{color:#f85149}.yellow{color:#d29922}.blue{color:#58a6ff}
+.runs-table,.trades-table{width:100%;border-collapse:collapse;font-size:12px}
+.runs-table th,.trades-table th{color:#8b949e;text-align:left;padding:5px 7px;border-bottom:1px solid #21262d;font-size:11px;text-transform:uppercase}
+.runs-table td{padding:7px 7px;border-bottom:1px solid #161b22;cursor:pointer}
+.trades-table td{padding:5px 7px;border-bottom:1px solid #161b22}
+.runs-table tr:hover td{background:#21262d}
+.status-running{color:#d29922}.status-completed{color:#3fb950}.status-failed{color:#f85149}
+.chart-wrap{width:100%;height:140px;background:#0d1117;border:1px solid #21262d;border-radius:8px;overflow:hidden;margin-bottom:12px}
+canvas{width:100%;height:100%}
+.badge{display:inline-block;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700}
+.badge-tp{background:#0f2d1a;color:#3fb950;border:1px solid #3fb950}
+.badge-sl{background:#2d1b1b;color:#f85149;border:1px solid #f85149}
+.badge-eod{background:#2d2519;color:#d29922;border:1px solid #d29922}
+#results{display:none}
+#run-msg{margin-top:10px;font-size:13px;color:#8b949e;text-align:center;min-height:18px}
+</style>
+</head>
+<body>
+<div class="nav"><a href="/">&#x2190; Live Monitor</a></div>
+<h1>&#x1F4CA; Backtest</h1>
+
+<div class="card">
+  <div class="card-title">Configure Backtest</div>
+  <div class="form-row">
+    <div class="form-group">
+      <label>Start Date</label>
+      <input type="date" id="bt-start">
+    </div>
+    <div class="form-group">
+      <label>End Date</label>
+      <input type="date" id="bt-end">
+    </div>
+  </div>
+  <div class="form-row">
+    <div class="form-group">
+      <label>Initial Equity ($)</label>
+      <input type="number" id="bt-equity" value="100000" min="1000" step="1000">
+    </div>
+    <div class="form-group">
+      <label>Min Score to Buy</label>
+      <input type="number" id="bt-score" value="12" step="0.5" min="0" max="40">
+    </div>
+  </div>
+  <div class="form-group">
+    <label>Tickers (comma-separated)</label>
+    <input type="text" id="bt-tickers" value="NVDA,TSLA,AMD,AAPL,META,MSFT,SPY,QQQ">
+  </div>
+  <button class="run-btn" id="run-btn" onclick="startBacktest()">&#x25B6; Run Backtest</button>
+  <div id="run-msg"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">Past Runs</div>
+  <div id="runs-list"><p style="color:#8b949e;font-size:13px;text-align:center;padding:8px">Loading...</p></div>
+</div>
+
+<div id="results">
+  <div class="card">
+    <div class="card-title" id="res-title">Results</div>
+    <div class="metric-grid" id="res-metrics"></div>
+    <div class="card-title">Equity Curve</div>
+    <div class="chart-wrap"><canvas id="bt-canvas"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-title" id="res-trades-title">Trades</div>
+    <div style="overflow-x:auto">
+      <table class="trades-table">
+        <thead><tr>
+          <th>Date</th><th>Sym</th><th>Qty</th>
+          <th>Entry</th><th>Exit</th><th>Reason</th><th>P&amp;L</th><th>P&amp;L%</th>
+        </tr></thead>
+        <tbody id="res-trades"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const today = new Date();
+const ago30 = new Date(); ago30.setDate(ago30.getDate()-30);
+document.getElementById('bt-end').value   = today.toISOString().slice(0,10);
+document.getElementById('bt-start').value = ago30.toISOString().slice(0,10);
+
+function fmt(n,d=2){return(n==null||n===undefined)?'N/A':parseFloat(n).toFixed(d);}
+
+async function startBacktest(){
+  const btn=document.getElementById('run-btn');
+  const msg=document.getElementById('run-msg');
+  btn.disabled=true; msg.style.color='#8b949e'; msg.textContent='Starting...';
+  try{
+    const r=await fetch('/api/backtest/start',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        start:  document.getElementById('bt-start').value,
+        end:    document.getElementById('bt-end').value,
+        equity: parseFloat(document.getElementById('bt-equity').value),
+        tickers:document.getElementById('bt-tickers').value,
+        min_score: parseFloat(document.getElementById('bt-score').value),
+      }),
+    });
+    const d=await r.json();
+    if(d.run_id){
+      msg.textContent=`Run #${d.run_id} started — fetching data & simulating (may take a few minutes)...`;
+      loadRuns(); pollRun(d.run_id);
+    }else{
+      msg.style.color='#f85149'; msg.textContent=d.error||'Failed to start.'; btn.disabled=false;
+    }
+  }catch(e){msg.style.color='#f85149';msg.textContent='Request failed.';btn.disabled=false;}
+}
+
+async function pollRun(id){
+  const r=await fetch(`/api/backtest/run/${id}`);
+  const d=await r.json();
+  const msg=document.getElementById('run-msg');
+  if(d.status==='running'){setTimeout(()=>pollRun(id),5000);return;}
+  document.getElementById('run-btn').disabled=false;
+  if(d.status==='completed'){
+    msg.style.color='#3fb950'; msg.textContent=`Run #${id} complete!`;
+    loadRuns(); showResults(id);
+  }else{
+    msg.style.color='#f85149'; msg.textContent=`Run #${id} failed: ${d.error||'unknown error'}`;
+    loadRuns();
+  }
+}
+
+async function loadRuns(){
+  const r=await fetch('/api/backtest/runs');
+  const runs=await r.json();
+  const el=document.getElementById('runs-list');
+  if(!runs.length){
+    el.innerHTML='<p style="color:#8b949e;font-size:13px;text-align:center;padding:8px">No runs yet.</p>';
+    return;
+  }
+  let html='<table class="runs-table"><thead><tr><th>#</th><th>Period</th><th>Tickers</th><th>Return</th><th>Sharpe</th><th>Win%</th><th>Status</th></tr></thead><tbody>';
+  runs.forEach(r=>{
+    const m=r.metrics||{};
+    const ret=m.total_return_pct!=null?`<span class="${m.total_return_pct>=0?'green':'red'}">${m.total_return_pct>=0?'+':''}${fmt(m.total_return_pct)}%</span>`:'—';
+    html+=`<tr onclick="showResults(${r.id})">
+      <td class="blue">#${r.id}</td>
+      <td style="font-size:11px">${r.start_date}<br>${r.end_date}</td>
+      <td style="font-size:10px;color:#8b949e">${r.tickers.join(', ')}</td>
+      <td>${ret}</td>
+      <td>${m.sharpe_ratio!=null?fmt(m.sharpe_ratio):'—'}</td>
+      <td>${m.win_rate_pct!=null?fmt(m.win_rate_pct,1)+'%':'—'}</td>
+      <td class="status-${r.status}">${r.status}</td>
+    </tr>`;
+  });
+  el.innerHTML=html+'</tbody></table>';
+}
+
+async function showResults(id){
+  const r=await fetch(`/api/backtest/run/${id}`);
+  const d=await r.json();
+  document.getElementById('results').style.display='block';
+  document.getElementById('res-title').textContent=`Run #${d.id} — ${d.start_date} to ${d.end_date}`;
+  const m=d.metrics||{};
+  const metrics=[
+    {l:'Total Return', v:`${m.total_return_pct>=0?'+':''}${fmt(m.total_return_pct)}%`, c:m.total_return_pct>=0?'green':'red'},
+    {l:'Sharpe Ratio', v:fmt(m.sharpe_ratio),   c:m.sharpe_ratio>=1?'green':m.sharpe_ratio>=0?'yellow':'red'},
+    {l:'Win Rate',     v:`${fmt(m.win_rate_pct,1)}%`, c:'blue'},
+    {l:'Max Drawdown', v:`${fmt(m.max_drawdown_pct)}%`,c:'red'},
+    {l:'Profit Factor',v:fmt(m.profit_factor),  c:m.profit_factor>=1.5?'green':'yellow'},
+    {l:'Total Trades', v:m.total_trades||0,      c:''},
+  ];
+  document.getElementById('res-metrics').innerHTML=metrics.map(x=>
+    `<div class="metric-box"><div class="metric-val ${x.c}">${x.v}</div><div class="metric-lbl">${x.l}</div></div>`
+  ).join('');
+  drawChart(d.equity_curve, d.initial_equity);
+  const wins=d.trades.filter(t=>t.pnl>0).length;
+  document.getElementById('res-trades-title').textContent=
+    `Trades (${d.trades.length} total, ${wins} wins, ${d.trades.length-wins} losses)`;
+  let rows='';
+  d.trades.slice().reverse().forEach(t=>{
+    const pc=t.pnl>=0?'green':'red';
+    const sign=t.pnl>=0?'+':'';
+    const bc=t.exit_reason==='tp_hit'?'badge-tp':t.exit_reason.includes('eod')?'badge-eod':'badge-sl';
+    const bl=t.exit_reason==='tp_hit'?'TP':t.exit_reason.includes('eod')?'EOD':'SL';
+    rows+=`<tr>
+      <td>${t.date}</td><td class="blue">${t.symbol}</td><td>${t.qty}</td>
+      <td>$${fmt(t.entry)}</td><td>$${fmt(t.exit_price)}</td>
+      <td><span class="badge ${bc}">${bl}</span></td>
+      <td class="${pc}">${sign}$${fmt(Math.abs(t.pnl))}</td>
+      <td class="${pc}">${sign}${fmt(t.pnl_pct)}%</td>
+    </tr>`;
+  });
+  document.getElementById('res-trades').innerHTML=rows||
+    '<tr><td colspan="8" style="text-align:center;color:#8b949e;padding:12px">No trades in this run.</td></tr>';
+  document.getElementById('results').scrollIntoView({behavior:'smooth'});
+}
+
+function drawChart(curve, initEq){
+  const canvas=document.getElementById('bt-canvas');
+  const ctx=canvas.getContext('2d');
+  const w=canvas.width=canvas.offsetWidth;
+  const h=canvas.height=canvas.offsetHeight;
+  const data=curve.map(p=>p.equity);
+  if(data.length<2){
+    ctx.fillStyle='#8b949e';ctx.font='12px monospace';ctx.textAlign='center';
+    ctx.fillText('No data',w/2,h/2);return;
+  }
+  const mn=Math.min(initEq,...data), mx=Math.max(initEq,...data), rng=mx-mn||1;
+  ctx.clearRect(0,0,w,h);
+  const isUp=data[data.length-1]>=initEq;
+  const col=isUp?'#3fb950':'#f85149';
+  const grad=ctx.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,isUp?'rgba(63,185,80,0.3)':'rgba(248,81,73,0.3)');
+  grad.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.beginPath();
+  data.forEach((v,i)=>{
+    const x=(i/(data.length-1))*w;
+    const y=h-((v-mn)/rng)*(h-10)-5;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle=col;ctx.lineWidth=2;ctx.stroke();
+  ctx.lineTo(w,h);ctx.lineTo(0,h);ctx.closePath();
+  ctx.fillStyle=grad;ctx.fill();
+  // baseline
+  const by=h-((initEq-mn)/rng)*(h-10)-5;
+  ctx.beginPath();ctx.moveTo(0,by);ctx.lineTo(w,by);
+  ctx.strokeStyle='rgba(139,148,158,0.4)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+  ctx.stroke();ctx.setLineDash([]);
+}
+
+loadRuns();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/backtest")
+@require_auth
+def backtest_page():
+    return render_template_string(BACKTEST_TEMPLATE)
+
+
+@app.route("/api/backtest/runs")
+@require_auth
+def api_backtest_runs():
+    return jsonify(get_runs())
+
+
+@app.route("/api/backtest/run/<int:run_id>")
+@require_auth
+def api_backtest_run(run_id):
+    d = get_run_details(run_id)
+    if not d:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(d)
+
+
+@app.route("/api/backtest/start", methods=["POST"])
+@require_auth
+def api_backtest_start():
+    data = request.get_json(force=True)
+    try:
+        start     = date.fromisoformat(data["start"])
+        end       = date.fromisoformat(data["end"])
+        equity    = float(data.get("equity", 100_000))
+        tickers   = [t.strip().upper() for t in data.get("tickers", "").split(",") if t.strip()]
+        min_score = float(data.get("min_score", DEFAULT_RISK["min_score_to_buy"]))
+        if not tickers:
+            return jsonify({"error": "No tickers provided"}), 400
+        if start >= end:
+            return jsonify({"error": "start must be before end"}), 400
+        risk = {**DEFAULT_RISK, "min_score_to_buy": min_score}
+        engine = BacktestEngine(risk=risk, cb=DEFAULT_CB)
+        run_id = create_run(start, end, tickers, engine.risk, equity)
+        threading.Thread(
+            target=engine.run,
+            args=(run_id, tickers, start, end, equity),
+            daemon=True,
+        ).start()
+        return jsonify({"run_id": run_id})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 if __name__ == "__main__":
