@@ -11,8 +11,10 @@ from backtest import (
     BacktestEngine, init_backtest_db, create_run,
     get_runs, get_run_details, DEFAULT_RISK, DEFAULT_CB,
 )
+from chess_module import chess_manager
 
 app = Flask(__name__)
+app.static_folder = 'static'
 init_backtest_db()
 
 DASHBOARD_USER = os.getenv("DASHBOARD_USER", "")
@@ -161,7 +163,7 @@ body.light .market-closed{background:#fff0ee;color:#cf222e;border-color:#cf222e}
 </style>
 </head>
 <body>
-<h1>&#x1F916; Bot HUD <a href="/backtest" style="font-size:12px;color:#58a6ff;margin-left:8px;text-decoration:none;font-weight:400">&#x1F4CA; Backtest</a><button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀ Light</button></h1>
+<h1>&#x1F916; Bot HUD <a href="/backtest" style="font-size:12px;color:#58a6ff;margin-left:8px;text-decoration:none;font-weight:400">&#x1F4CA; Backtest</a><a href="/chess" style="font-size:12px;color:#58a6ff;margin-left:8px;text-decoration:none;font-weight:400">&#x265F; Chess</a><button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀ Light</button></h1>
 <div id="market-banner" class="market-banner market-closed">&#x23F0; Checking market...</div>
 <div id="stop-confirm" class="stop-confirm">
   <p>&#x26A0; Are you sure you want to stop the bot?<br>All open orders will remain open.</p>
@@ -792,6 +794,136 @@ def api_backtest_start():
         return jsonify({"run_id": run_id})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+CHESS_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Chess &#x265F;</title>
+  <link rel="stylesheet" href="/static/chess/chess.css">
+</head>
+<body>
+
+<!-- Rule announcement banner -->
+<div id="rule-banner">
+  <div class="rule-banner-emoji">&#x26A1;</div>
+  <div class="rule-banner-name">Rule Change!</div>
+  <div class="rule-banner-desc">A new rule has been activated.</div>
+  <button id="rule-ok">Got it!</button>
+</div>
+
+<div id="chess-app">
+  <!-- Header -->
+  <div id="chess-header">
+    <div id="chess-title">&#x265F; Chaos Chess</div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button id="resign-btn">Resign</button>
+      <button id="new-game-btn">New Game</button>
+    </div>
+  </div>
+
+  <!-- Status bar (check warning) -->
+  <div id="status-bar"></div>
+
+  <!-- Turn indicator -->
+  <div id="turn-indicator">
+    <span class="turn-dot white" id="turn-dot"></span>
+    <span id="turn-label">White's Turn</span>
+    <span id="turn-counter">Rule changes in 4 moves</span>
+  </div>
+
+  <!-- Active rules pill bar -->
+  <div id="active-rules-bar"></div>
+
+  <!-- Board -->
+  <div id="board-wrapper">
+    <div id="chess-board"></div>
+  </div>
+
+  <!-- Move log -->
+  <div id="move-log-section">
+    <div id="move-log-header">Move History</div>
+    <div id="move-log"></div>
+  </div>
+
+  <!-- Back link -->
+  <a href="/" style="font-size:12px;color:#8b949e;text-decoration:none;margin-top:4px">&#x2190; Back to Dashboard</a>
+</div>
+
+<!-- Promotion modal -->
+<div class="modal-overlay hidden" id="promotion-modal">
+  <div class="modal-box">
+    <h2>Promote Pawn</h2>
+    <p>Choose a piece to promote to:</p>
+    <div id="promo-choices"></div>
+  </div>
+</div>
+
+<!-- Game over modal -->
+<div class="modal-overlay hidden" id="game-over-modal">
+  <div class="modal-box">
+    <div class="winner-banner">&#x265A;</div>
+    <div class="outcome-text">Game Over</div>
+    <div class="outcome-sub"></div>
+    <button id="play-again-btn">Play Again</button>
+  </div>
+</div>
+
+<script src="/static/chess/chess.js"></script>
+</body>
+</html>"""
+
+
+@app.route("/chess")
+def chess_page():
+    return render_template_string(CHESS_TEMPLATE)
+
+
+@app.route("/api/chess/new", methods=["POST"])
+def api_chess_new():
+    session = chess_manager.new_game()
+    return jsonify(session.to_dict())
+
+
+@app.route("/api/chess/state")
+def api_chess_state():
+    game_id = request.args.get("game_id")
+    session = chess_manager.get_game(game_id)
+    if not session:
+        return jsonify({"error": "Game not found"}), 404
+    return jsonify(session.to_dict())
+
+
+@app.route("/api/chess/moves")
+def api_chess_moves():
+    game_id = request.args.get("game_id")
+    row = int(request.args.get("row", 0))
+    col = int(request.args.get("col", 0))
+    moves = chess_manager.get_legal_moves_for_square(game_id, row, col)
+    return jsonify({"moves": moves})
+
+
+@app.route("/api/chess/move", methods=["POST"])
+def api_chess_move():
+    data = request.get_json(force=True)
+    result = chess_manager.make_move(
+        data.get("game_id"),
+        int(data.get("from_row", 0)), int(data.get("from_col", 0)),
+        int(data.get("to_row", 0)),  int(data.get("to_col", 0)),
+        data.get("promotion"),
+    )
+    return jsonify(result)
+
+
+@app.route("/api/chess/resign", methods=["POST"])
+def api_chess_resign():
+    data = request.get_json(force=True)
+    result = chess_manager.resign(data.get("game_id"), data.get("color"))
+    return jsonify(result)
 
 
 if __name__ == "__main__":
