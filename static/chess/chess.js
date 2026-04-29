@@ -465,6 +465,30 @@ const InputHandler = {
   },
 };
 
+// ── Dynamic board sizing ──────────────────────────────────────────────────────
+function resizeBoard() {
+  const wrapper = document.getElementById('board-wrapper');
+  if (!wrapper) return;
+
+  // Measure height used by everything above the board
+  let usedHeight = 0;
+  ['chess-header', 'status-bar', 'turn-indicator', 'active-rules-bar'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) usedHeight += el.getBoundingClientRect().height;
+  });
+  // Add gap spacing (4 gaps × 10px) + top/bottom app padding + a little breathing room
+  usedHeight += 80;
+
+  const maxW = window.innerWidth;
+  const maxH = window.innerHeight - usedHeight;
+  const size = Math.floor(Math.min(maxW, maxH));
+
+  wrapper.style.width  = size + 'px';
+  wrapper.style.height = size + 'px';
+  // Expose as CSS variable so font-size can use it
+  document.documentElement.style.setProperty('--board-size', size + 'px');
+}
+
 // ── App bootstrap ─────────────────────────────────────────────────────────────
 async function startNewGame() {
   GameOverModal.hide();
@@ -509,6 +533,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Start first game immediately
+  // Size the board, then start
+  resizeBoard();
+  window.addEventListener('resize', resizeBoard);
+  window.addEventListener('orientationchange', () => setTimeout(resizeBoard, 100));
+
   startNewGame();
 });

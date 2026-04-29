@@ -184,8 +184,8 @@ html, body {
 
 /* ── Chess board ──────────────────────────────────────────────────────────── */
 #board-wrapper {
-  /* Fit both viewport width AND height (minus header/bars above the board) */
-  width: min(100%, calc(100vh - 200px));
+  /* JS sets exact px size via resizeBoard() */
+  flex-shrink: 0;
   align-self: center;
   border-top: 2px solid var(--border);
   border-bottom: 2px solid var(--border);
@@ -194,7 +194,6 @@ html, body {
   border-radius: 0;
   overflow: hidden;
   box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  flex-shrink: 0;
 }
 #board-wrapper.mirrored { transform: rotate(180deg); }
 #board-wrapper.mirrored .square { transform: rotate(180deg); }
@@ -213,7 +212,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: min(10vw, calc((100vh - 200px) / 9));
+  font-size: calc(var(--board-size, 360px) / 9);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
@@ -395,6 +394,5 @@ html, body {
   #board-wrapper {
     border: 2px solid var(--border);
     border-radius: 6px;
-    width: min(calc(100% - 16px), calc(100vh - 200px));
   }
 }
