@@ -22,6 +22,9 @@ env/
 bot.log
 status.json
 
+# Chess runtime database
+chess_games.db
+
 # OS
 .DS_Store
 Thumbs.db
