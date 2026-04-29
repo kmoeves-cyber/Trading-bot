@@ -465,28 +465,28 @@ const InputHandler = {
   },
 };
 
-// ── Dynamic board sizing ──────────────────────────────────────────────────────
-function resizeBoard() {
+// ── Font scaling via ResizeObserver ──────────────────────────────────────────
+// CSS dvw/dvh handles the board dimensions; JS only needs to scale the pieces.
+function initBoardSizing() {
   const wrapper = document.getElementById('board-wrapper');
   if (!wrapper) return;
 
-  // clientWidth excludes scrollbars and Android gesture areas — more reliable than innerWidth
-  const vw = document.documentElement.clientWidth;
-  const vh = window.innerHeight;
+  const update = (width) => {
+    // Each square = width/8; pieces fill ~90% of a square
+    const fontSize = Math.round(width / 8 * 0.88);
+    document.documentElement.style.setProperty('--board-size', fontSize + 'px');
+  };
 
-  // Measure actual rendered height of every element above the board
-  let uiHeight = 0;
-  ['chess-header', 'status-bar', 'turn-indicator', 'active-rules-bar'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) uiHeight += el.offsetHeight;
-  });
-  uiHeight += 70; // gaps between elements + top/bottom app padding
-
-  const size = Math.max(160, Math.min(vw, vh - uiHeight));
-
-  wrapper.style.width  = size + 'px';
-  wrapper.style.height = size + 'px';
-  document.documentElement.style.setProperty('--board-size', size + 'px');
+  if (window.ResizeObserver) {
+    new ResizeObserver(entries => {
+      update(entries[0].contentRect.width);
+    }).observe(wrapper);
+  } else {
+    // Fallback for old browsers
+    const w = wrapper.getBoundingClientRect().width || document.documentElement.clientWidth;
+    update(w);
+    window.addEventListener('resize', () => update(wrapper.getBoundingClientRect().width));
+  }
 }
 
 // ── App bootstrap ─────────────────────────────────────────────────────────────
@@ -501,8 +501,6 @@ async function startNewGame() {
   UIRenderer.updateTurnIndicator(state);
   UIRenderer.updateActiveRules(state.active_rules);
   UIRenderer.updateMoveLog(state.move_history);
-  // Re-measure after content renders so rules bar height is included
-  requestAnimationFrame(resizeBoard);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -535,8 +533,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  window.addEventListener('resize', resizeBoard);
-  window.addEventListener('orientationchange', () => setTimeout(resizeBoard, 200));
-
+  initBoardSizing();
   startNewGame();
 });

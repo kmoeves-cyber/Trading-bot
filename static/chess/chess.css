@@ -52,17 +52,20 @@ html, body {
 #rule-ok:active { opacity: 0.75; }
 
 /* ── App layout ───────────────────────────────────────────────────────────── */
+html, body { overflow-x: hidden; }
+
 #chess-app {
   display: flex;
   flex-direction: column;
   align-items: center;
   padding: 12px 0 24px;
-  min-height: 100vh;
+  width: 100%;
   max-width: 520px;
   margin: 0 auto;
+  overflow-x: hidden;
   gap: 10px;
 }
-/* All children except the board get side padding */
+/* Non-board children get side padding */
 #chess-header,
 #status-bar,
 #turn-indicator,
@@ -70,6 +73,8 @@ html, body {
 #move-log-section,
 #chess-app > a {
   width: calc(100% - 16px);
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────── */
@@ -184,7 +189,10 @@ html, body {
 
 /* ── Chess board ──────────────────────────────────────────────────────────── */
 #board-wrapper {
-  /* JS sets exact px size via resizeBoard() */
+  /* dvw/dvh = dynamic viewport units — exclude browser chrome on mobile */
+  width: min(100dvw, calc(100dvh - 210px));
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
   flex-shrink: 0;
   align-self: center;
   border-top: 2px solid var(--border);
@@ -212,7 +220,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: calc(var(--board-size, 360px) / 9);
+  /* --board-size updated by ResizeObserver in JS */
+  font-size: calc(var(--board-size, 45px) / 1);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
@@ -392,6 +401,7 @@ html, body {
 /* ── Desktop tweaks ───────────────────────────────────────────────────────── */
 @media (min-width: 500px) {
   #board-wrapper {
+    width: min(calc(100% - 16px), calc(100dvh - 210px));
     border: 2px solid var(--border);
     border-radius: 6px;
   }
