@@ -854,6 +854,17 @@ CHESS_TEMPLATE = """<!DOCTYPE html>
   <a href="/" style="font-size:12px;color:#8b949e;text-decoration:none;margin-top:4px">&#x2190; Back to Dashboard</a>
 </div>
 
+<!-- Rule info modal (tap a rule pill to open) -->
+<div class="modal-overlay hidden" id="rule-info-modal">
+  <div class="modal-box">
+    <div class="rule-info-emoji">⚡</div>
+    <div class="rule-info-name"></div>
+    <div class="rule-info-desc"></div>
+    <div class="rule-info-turns"></div>
+    <button id="rule-info-close">Got it</button>
+  </div>
+</div>
+
 <!-- Promotion modal -->
 <div class="modal-overlay hidden" id="promotion-modal">
   <div class="modal-box">

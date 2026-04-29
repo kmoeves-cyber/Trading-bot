@@ -194,9 +194,11 @@ const UIRenderer = {
       pill.innerHTML = `
         <span class="rule-pill-emoji">${rule.emoji}</span>
         <span class="rule-pill-name">${rule.name}</span>
-        <span class="rule-pill-turns">(${rule.remaining_turns})</span>
+        <span class="rule-pill-turns">${rule.remaining_turns} left</span>
+        <span class="rule-pill-hint">ⓘ</span>
       `;
-      pill.title = rule.description;
+      pill.addEventListener('click', () => RuleInfoModal.show(rule));
+      pill.addEventListener('touchend', (e) => { e.preventDefault(); RuleInfoModal.show(rule); });
       bar.appendChild(pill);
     }
   },
@@ -243,6 +245,22 @@ const RuleBanner = {
   hide() {
     document.getElementById('rule-banner').classList.remove('visible');
     clearTimeout(this._timer);
+  },
+};
+
+// ── Rule info modal (tap a pill) ──────────────────────────────────────────────
+const RuleInfoModal = {
+  show(rule) {
+    const overlay = document.getElementById('rule-info-modal');
+    overlay.querySelector('.rule-info-emoji').textContent = rule.emoji || '⚡';
+    overlay.querySelector('.rule-info-name').textContent  = rule.name || '';
+    overlay.querySelector('.rule-info-desc').textContent  = rule.description || '';
+    overlay.querySelector('.rule-info-turns').textContent =
+      `${rule.remaining_turns} move${rule.remaining_turns === 1 ? '' : 's'} remaining`;
+    overlay.classList.remove('hidden');
+  },
+  hide() {
+    document.getElementById('rule-info-modal').classList.add('hidden');
   },
 };
 
@@ -467,6 +485,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Rule banner dismiss
   document.getElementById('rule-ok').addEventListener('click', () => RuleBanner.hide());
+
+  // Rule info modal dismiss
+  document.getElementById('rule-info-close').addEventListener('click', () => RuleInfoModal.hide());
+  document.getElementById('rule-info-modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) RuleInfoModal.hide();
+  });
 
   // New game buttons
   document.getElementById('new-game-btn').addEventListener('click', startNewGame);

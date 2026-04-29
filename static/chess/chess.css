@@ -56,11 +56,20 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 12px 8px 24px;
+  padding: 12px 0 24px;
   min-height: 100vh;
   max-width: 520px;
   margin: 0 auto;
   gap: 10px;
+}
+/* All children except the board get side padding */
+#chess-header,
+#status-bar,
+#turn-indicator,
+#active-rules-bar,
+#move-log-section,
+#chess-app > a {
+  width: calc(100% - 16px);
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────── */
@@ -123,22 +132,64 @@ html, body {
   align-items: center;
   gap: 4px;
   background: var(--card);
-  border: 1px solid var(--border);
+  border: 1px solid var(--blue);
   border-radius: 20px;
-  padding: 3px 10px 3px 6px;
-  font-size: 11px;
+  padding: 5px 10px 5px 8px;
+  font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
 }
-.rule-pill-emoji { font-size: 13px; }
-.rule-pill-name { font-weight: 500; color: var(--text); }
-.rule-pill-turns { color: var(--text-muted); }
+.rule-pill:active { background: #1c2b3a; }
+.rule-pill-emoji { font-size: 15px; }
+.rule-pill-name { font-weight: 600; color: var(--text); }
+.rule-pill-turns { color: var(--blue); font-size: 11px; }
+.rule-pill-hint { font-size: 10px; color: var(--text-muted); margin-left: 2px; }
+
+/* ── Rule info modal ──────────────────────────────────────────────────────── */
+#rule-info-modal .rule-info-emoji {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+#rule-info-modal .rule-info-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--blue);
+  margin-bottom: 10px;
+}
+#rule-info-modal .rule-info-desc {
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+#rule-info-modal .rule-info-turns {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+#rule-info-close {
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 28px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#rule-info-close:active { opacity: 0.8; }
 
 /* ── Chess board ──────────────────────────────────────────────────────────── */
 #board-wrapper {
-  width: min(100vw - 16px, 480px);
-  border: 2px solid var(--border);
-  border-radius: 6px;
+  width: 100%;
+  border-top: 2px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
   overflow: hidden;
   box-shadow: 0 4px 24px rgba(0,0,0,0.5);
   flex-shrink: 0;
@@ -160,7 +211,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: min(9.5vw, 46px);
+  font-size: min(11vw, 54px);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
@@ -339,5 +390,10 @@ html, body {
 
 /* ── Desktop tweaks ───────────────────────────────────────────────────────── */
 @media (min-width: 500px) {
-  .square { font-size: 42px; }
+  .square { font-size: 52px; }
+  #board-wrapper {
+    border: 2px solid var(--border);
+    border-radius: 6px;
+    width: calc(100% - 16px);
+  }
 }
