@@ -9,7 +9,7 @@ public class GameSessionManager
 {
     private const string DbPath = "chess_games.db";
     private readonly Dictionary<string, GameSession> _sessions = [];
-    private readonly Lock _lock = new();
+    private readonly object _lock = new();
     private readonly ChessEngine _engine = new();
     private readonly RulesEngine _rules = new();
 
