@@ -24,7 +24,8 @@ public class GameSessionManager
     {
         using var con = new SqliteConnection($"Data Source={DbPath}");
         con.Open();
-        con.CreateCommand().CommandText = """
+        var cmd = con.CreateCommand();
+        cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS chess_sessions (
                 game_id TEXT PRIMARY KEY,
                 state_json TEXT NOT NULL,
@@ -32,7 +33,7 @@ public class GameSessionManager
                 updated_at TEXT NOT NULL
             )
             """;
-        con.CreateCommand().ExecuteNonQuery();
+        cmd.ExecuteNonQuery();
     }
 
     private void LoadFromDb()

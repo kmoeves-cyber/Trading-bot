@@ -4,7 +4,7 @@ namespace ChessGame.Engine;
 
 public record RuleEffect(string Tag, Dictionary<string, string>? Params = null)
 {
-    public object ToDict() => new { tag = Tag, @params = Params ?? [] };
+    public object ToDict() => new { tag = Tag, @params = (object)(Params ?? new Dictionary<string, string>()) };
 }
 
 public record DynamicRule(
@@ -150,7 +150,7 @@ public class RulesEngine
             var tag = ed["tag"].ToString()!;
             var parms = ed.ContainsKey("params")
                 ? (Dictionary<string, object>)ed["params"]
-                : [];
+                : new Dictionary<string, object>();
 
             if (tag == "swap_types")
                 SwapTypes(board,
