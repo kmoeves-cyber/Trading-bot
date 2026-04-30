@@ -1,0 +1,14 @@
+[Unit]
+Description=Chaos Chess C# Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Trading-bot/ChessGame
+ExecStart=/usr/bin/dotnet run --configuration Release
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,408 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #21262d;
+  --blue: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --sq-light: #f0d9b5;
+  --sq-dark: #b58863;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+/* ── Rule announcement banner ─────────────────────────────────────────────── */
+#rule-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  background: var(--card);
+  border-bottom: 2px solid var(--blue);
+  padding: 14px 16px;
+  text-align: center;
+  z-index: 200;
+  transform: translateY(-100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+#rule-banner.visible { transform: translateY(0); }
+.rule-banner-emoji { font-size: 28px; margin-bottom: 4px; }
+.rule-banner-name { font-size: 18px; font-weight: 700; color: var(--blue); margin-bottom: 4px; }
+.rule-banner-desc { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.4; }
+#rule-ok {
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#rule-ok:active { opacity: 0.75; }
+
+/* ── App layout ───────────────────────────────────────────────────────────── */
+html, body { overflow-x: hidden; }
+
+#chess-app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0 24px;
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  overflow-x: hidden;
+  gap: 10px;
+}
+/* Non-board children get side padding */
+#chess-header,
+#status-bar,
+#turn-indicator,
+#active-rules-bar,
+#move-log-section,
+#chess-app > a {
+  width: calc(100% - 16px);
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+#chess-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+#chess-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+#new-game-btn {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#new-game-btn:active { background: var(--border); }
+
+/* ── Turn indicator ───────────────────────────────────────────────────────── */
+#turn-indicator {
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.turn-dot {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.turn-dot.white { background: #fff; box-shadow: 0 0 0 2px #888; }
+.turn-dot.black { background: #222; box-shadow: 0 0 0 2px #888; }
+#turn-label { font-weight: 600; flex: 1; }
+#turn-counter { font-size: 12px; color: var(--text-muted); }
+
+/* ── Active rules pill bar ────────────────────────────────────────────────── */
+#active-rules-bar {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 0;
+}
+.rule-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--card);
+  border: 1px solid var(--blue);
+  border-radius: 20px;
+  padding: 5px 10px 5px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.rule-pill:active { background: #1c2b3a; }
+.rule-pill-emoji { font-size: 15px; }
+.rule-pill-name { font-weight: 600; color: var(--text); }
+.rule-pill-turns { color: var(--blue); font-size: 11px; }
+.rule-pill-hint { font-size: 10px; color: var(--text-muted); margin-left: 2px; }
+
+/* ── Rule info modal ──────────────────────────────────────────────────────── */
+#rule-info-modal .rule-info-emoji {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+#rule-info-modal .rule-info-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--blue);
+  margin-bottom: 10px;
+}
+#rule-info-modal .rule-info-desc {
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+#rule-info-modal .rule-info-turns {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+#rule-info-close {
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 28px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#rule-info-close:active { opacity: 0.8; }
+
+/* ── Chess board ──────────────────────────────────────────────────────────── */
+#board-wrapper {
+  /* dvw/dvh = dynamic viewport units — exclude browser chrome on mobile */
+  width: min(100dvw, calc(100dvh - 210px));
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+  flex-shrink: 0;
+  align-self: center;
+  border-top: 2px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+}
+#board-wrapper.mirrored { transform: rotate(180deg); }
+#board-wrapper.mirrored .square { transform: rotate(180deg); }
+
+#chess-board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  width: 100%;
+  aspect-ratio: 1;
+  touch-action: none;
+}
+
+.square {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* --board-size updated by ResizeObserver in JS */
+  font-size: calc(var(--board-size, 45px) / 1);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  position: relative;
+  transition: background 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.square.light { background: var(--sq-light); }
+.square.dark  { background: var(--sq-dark); }
+
+.square.selected {
+  background: #7fc97f !important;
+  box-shadow: inset 0 0 0 3px #2a8f2a;
+}
+.square.last-from { background: rgba(88,166,255,0.25) !important; }
+.square.last-to   { background: rgba(88,166,255,0.4) !important; }
+.square.in-check  { background: var(--red) !important; animation: pulse-check 0.8s ease infinite alternate; }
+
+@keyframes pulse-check {
+  from { background: #f85149; }
+  to   { background: #ff6b6b; }
+}
+
+/* Legal move indicators */
+.square.legal-empty::after {
+  content: '';
+  position: absolute;
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.22);
+  pointer-events: none;
+}
+.square.legal-capture::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 4px solid rgba(0,0,0,0.22);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+/* ── Modals ───────────────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+  backdrop-filter: blur(2px);
+}
+.modal-overlay.hidden { display: none; }
+
+.modal-box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 20px;
+  text-align: center;
+  max-width: 300px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+.modal-box h2 { font-size: 22px; margin-bottom: 8px; }
+.modal-box p  { font-size: 14px; color: var(--text-muted); margin-bottom: 18px; }
+
+/* Promotion picker */
+#promo-choices {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.promo-btn {
+  width: 60px; height: 60px;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  font-size: 36px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.promo-btn:active { background: var(--border); }
+
+/* Game over */
+#game-over-modal .winner-banner {
+  font-size: 40px;
+  margin-bottom: 6px;
+}
+#game-over-modal .outcome-text {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--blue);
+  margin-bottom: 4px;
+}
+#game-over-modal .outcome-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+#play-again-btn {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 28px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#play-again-btn:active { opacity: 0.8; }
+
+/* ── Move log ─────────────────────────────────────────────────────────────── */
+#move-log-section {
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+#move-log-header {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+#move-log {
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.move-entry {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 8px;
+}
+.move-entry .move-num { color: var(--text); font-weight: 600; min-width: 20px; }
+.move-entry .move-notation { font-family: monospace; }
+
+/* ── Resign button ────────────────────────────────────────────────────────── */
+#resign-btn {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#resign-btn:active { background: rgba(248,81,73,0.15); }
+
+/* ── Status banner (check warning) ───────────────────────────────────────── */
+#status-bar {
+  width: 100%;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--red);
+  min-height: 18px;
+}
+
+/* ── Desktop tweaks ───────────────────────────────────────────────────────── */
+@media (min-width: 500px) {
+  #board-wrapper {
+    width: min(calc(100% - 16px), calc(100dvh - 210px));
+    border: 2px solid var(--border);
+    border-radius: 6px;
+  }
+}
