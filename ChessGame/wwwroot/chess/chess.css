@@ -57,12 +57,11 @@ html, body { overflow-x: hidden; }
 #chess-app {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   padding: 12px 0 24px;
   width: 100%;
-  max-width: 520px;
+  max-width: 480px;
   margin: 0 auto;
-  overflow-x: hidden;
   gap: 10px;
 }
 /* Non-board children get side padding */
@@ -72,8 +71,8 @@ html, body { overflow-x: hidden; }
 #active-rules-bar,
 #move-log-section,
 #chess-app > a {
-  width: calc(100% - 16px);
-  max-width: 100%;
+  padding-left: 8px;
+  padding-right: 8px;
   box-sizing: border-box;
 }
 
@@ -189,12 +188,9 @@ html, body { overflow-x: hidden; }
 
 /* ── Chess board ──────────────────────────────────────────────────────────── */
 #board-wrapper {
-  /* dvw/dvh = dynamic viewport units — exclude browser chrome on mobile */
-  width: min(100dvw, calc(100dvh - 210px));
-  max-width: 100%;
+  width: 100%;
   aspect-ratio: 1 / 1;
   flex-shrink: 0;
-  align-self: center;
   border-top: 2px solid var(--border);
   border-bottom: 2px solid var(--border);
   border-left: none;
@@ -401,7 +397,6 @@ html, body { overflow-x: hidden; }
 /* ── Desktop tweaks ───────────────────────────────────────────────────────── */
 @media (min-width: 500px) {
   #board-wrapper {
-    width: min(calc(100% - 16px), calc(100dvh - 210px));
     border: 2px solid var(--border);
     border-radius: 6px;
   }
