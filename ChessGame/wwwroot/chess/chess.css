@@ -188,14 +188,13 @@ html, body { overflow-x: hidden; }
 
 /* ── Chess board ──────────────────────────────────────────────────────────── */
 #board-wrapper {
-  width: 100%;
+  width: calc(100% - 16px);
+  max-width: 440px;
   aspect-ratio: 1 / 1;
   flex-shrink: 0;
-  border-top: 2px solid var(--border);
-  border-bottom: 2px solid var(--border);
-  border-left: none;
-  border-right: none;
-  border-radius: 0;
+  align-self: center;
+  border: 2px solid var(--border);
+  border-radius: 4px;
   overflow: hidden;
   box-shadow: 0 4px 24px rgba(0,0,0,0.5);
 }
@@ -405,8 +404,5 @@ html, body { overflow-x: hidden; }
 
 /* ── Desktop tweaks ───────────────────────────────────────────────────────── */
 @media (min-width: 500px) {
-  #board-wrapper {
-    border: 2px solid var(--border);
-    border-radius: 6px;
-  }
+  #board-wrapper { border-radius: 6px; }
 }
