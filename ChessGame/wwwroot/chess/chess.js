@@ -475,26 +475,22 @@ function initBoardSizing() {
   if (!wrapper) return;
 
   const clamp = () => {
-    // Try every available width API and take the smallest
     const vv  = window.visualViewport ? window.visualViewport.width : null;
     const iw  = window.innerWidth;
     const cc  = document.documentElement.clientWidth;
     const sc  = window.screen.width;
-    const w   = Math.floor(Math.min(...[vv, iw, cc, sc].filter(Boolean)));
+    const av  = window.screen.availWidth;
+    // availWidth excludes Samsung Edge Panel and similar OS chrome
+    const w   = Math.floor(Math.min(...[vv, iw, cc, sc, av].filter(Boolean)));
 
     wrapper.style.width    = w + 'px';
     wrapper.style.maxWidth = w + 'px';
     const fontSize = Math.round(w / 8 * 0.82);
     document.documentElement.style.setProperty('--board-size', fontSize + 'px');
 
-    // Debug bar — shows actual rendered position, not just set value
     const dbg = document.getElementById('size-dbg');
-    if (dbg) {
-      const r = wrapper.getBoundingClientRect();
-      const ar = document.getElementById('chess-app').getBoundingClientRect();
-      dbg.textContent =
-        `vv=${w} | board: x=${r.left|0} w=${r.width|0} →${r.right|0} | app: x=${ar.left|0} w=${ar.width|0} →${ar.right|0}`;
-    }
+    if (dbg) dbg.textContent =
+      `vv=${vv|0} iw=${iw} av=${av} sc=${sc} → board=${w}`;
   };
 
   clamp();
