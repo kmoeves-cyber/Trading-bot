@@ -6,7 +6,9 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/Trading-bot/ChessGame
-ExecStart=/usr/bin/dotnet run --configuration Release
+Environment=DOTNET_ROOT=/root/.dotnet
+Environment=PATH=/root/.dotnet:/root/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/root/Trading-bot/ChessGame/bin/Release/net8.0/ChessGame
 Restart=on-failure
 RestartSec=5
 
