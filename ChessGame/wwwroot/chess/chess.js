@@ -469,33 +469,20 @@ const InputHandler = {
   },
 };
 
-// ── Board sizing ──────────────────────────────────────────────────────────────
+// ── Board sizing — scales piece glyphs to fit the board ───────────────────────
 function initBoardSizing() {
   const wrapper = document.getElementById('board-wrapper');
   if (!wrapper) return;
 
-  const clamp = () => {
-    const vv  = window.visualViewport ? window.visualViewport.width : null;
-    const iw  = window.innerWidth;
-    const cc  = document.documentElement.clientWidth;
-    const sc  = window.screen.width;
-    const av  = window.screen.availWidth;
-    // availWidth excludes Samsung Edge Panel and similar OS chrome
-    const w   = Math.floor(Math.min(...[vv, iw, cc, sc, av].filter(Boolean)));
-
-    wrapper.style.width    = w + 'px';
-    wrapper.style.maxWidth = w + 'px';
+  const update = () => {
+    const w = wrapper.getBoundingClientRect().width;
+    if (w < 1) return;
     const fontSize = Math.round(w / 8 * 0.82);
     document.documentElement.style.setProperty('--board-size', fontSize + 'px');
-
-    const dbg = document.getElementById('size-dbg');
-    if (dbg) dbg.textContent =
-      `vv=${vv|0} iw=${iw} av=${av} sc=${sc} → board=${w}`;
   };
 
-  clamp();
-  if (window.visualViewport) window.visualViewport.addEventListener('resize', clamp);
-  window.addEventListener('resize', clamp);
+  update();
+  new ResizeObserver(update).observe(wrapper);
 }
 
 // ── App bootstrap ─────────────────────────────────────────────────────────────
