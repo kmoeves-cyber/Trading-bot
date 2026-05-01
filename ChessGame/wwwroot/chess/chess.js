@@ -487,10 +487,14 @@ function initBoardSizing() {
     const fontSize = Math.round(w / 8 * 0.82);
     document.documentElement.style.setProperty('--board-size', fontSize + 'px');
 
-    // Debug bar — remove once sizing is confirmed correct
+    // Debug bar — shows actual rendered position, not just set value
     const dbg = document.getElementById('size-dbg');
-    if (dbg) dbg.textContent =
-      `vv=${vv|0} iw=${iw} cc=${cc} sc=${sc} → board=${w}`;
+    if (dbg) {
+      const r = wrapper.getBoundingClientRect();
+      const ar = document.getElementById('chess-app').getBoundingClientRect();
+      dbg.textContent =
+        `vv=${w} | board: x=${r.left|0} w=${r.width|0} →${r.right|0} | app: x=${ar.left|0} w=${ar.width|0} →${ar.right|0}`;
+    }
   };
 
   clamp();
