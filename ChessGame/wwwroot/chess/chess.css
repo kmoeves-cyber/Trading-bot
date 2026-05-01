@@ -216,14 +216,23 @@ html, body { overflow-x: hidden; }
   display: flex;
   align-items: center;
   justify-content: center;
-  /* --board-size updated by ResizeObserver in JS */
-  font-size: calc(var(--board-size, 45px) / 1);
+  font-size: var(--board-size, 40px);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
   position: relative;
   transition: background 0.1s;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* Piece colors — Unicode glyphs don't reliably distinguish on Android */
+.pc-w {
+  color: #ffffff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6);
+}
+.pc-b {
+  color: #1c1c1c;
+  text-shadow: 0 1px 3px rgba(255,255,255,0.7), 0 0 6px rgba(255,255,255,0.4);
 }
 
 .square.light { background: var(--sq-light); }

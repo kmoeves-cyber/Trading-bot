@@ -141,7 +141,11 @@ const UIRenderer = {
         if (isLegal) cls += isCapture ? ' legal-capture' : ' legal-empty';
 
         sq.className = cls;
-        sq.textContent = glyph(piece);
+        if (piece) {
+          sq.innerHTML = `<span class="pc-${piece.color}">${glyph(piece)}</span>`;
+        } else {
+          sq.textContent = '';
+        }
       }
     }
 
@@ -465,27 +469,27 @@ const InputHandler = {
   },
 };
 
-// ── Font scaling via ResizeObserver ──────────────────────────────────────────
-// CSS dvw/dvh handles the board dimensions; JS only needs to scale the pieces.
+// ── Board sizing ──────────────────────────────────────────────────────────────
 function initBoardSizing() {
   const wrapper = document.getElementById('board-wrapper');
-  if (!wrapper) return;
+  const app = document.getElementById('chess-app');
+  if (!wrapper || !app) return;
 
-  const update = (width) => {
-    // Each square = width/8; pieces fill ~90% of a square
-    const fontSize = Math.round(width / 8 * 0.88);
+  const clamp = () => {
+    // Use the app container's actual rendered width — never wider than the viewport
+    const appW = app.getBoundingClientRect().width;
+    const vw = document.documentElement.clientWidth;
+    const w = Math.min(appW, vw);
+    wrapper.style.width = w + 'px';
+    wrapper.style.maxWidth = w + 'px';
+    const fontSize = Math.round(w / 8 * 0.85);
     document.documentElement.style.setProperty('--board-size', fontSize + 'px');
   };
 
+  clamp();
+  window.addEventListener('resize', clamp);
   if (window.ResizeObserver) {
-    new ResizeObserver(entries => {
-      update(entries[0].contentRect.width);
-    }).observe(wrapper);
-  } else {
-    // Fallback for old browsers
-    const w = wrapper.getBoundingClientRect().width || document.documentElement.clientWidth;
-    update(w);
-    window.addEventListener('resize', () => update(wrapper.getBoundingClientRect().width));
+    new ResizeObserver(clamp).observe(app);
   }
 }
 
