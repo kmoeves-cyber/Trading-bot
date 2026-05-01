@@ -472,25 +472,30 @@ const InputHandler = {
 // ── Board sizing ──────────────────────────────────────────────────────────────
 function initBoardSizing() {
   const wrapper = document.getElementById('board-wrapper');
-  const app = document.getElementById('chess-app');
-  if (!wrapper || !app) return;
+  if (!wrapper) return;
 
   const clamp = () => {
-    // Use the app container's actual rendered width — never wider than the viewport
-    const appW = app.getBoundingClientRect().width;
-    const vw = document.documentElement.clientWidth;
-    const w = Math.min(appW, vw);
-    wrapper.style.width = w + 'px';
+    // Try every available width API and take the smallest
+    const vv  = window.visualViewport ? window.visualViewport.width : null;
+    const iw  = window.innerWidth;
+    const cc  = document.documentElement.clientWidth;
+    const sc  = window.screen.width;
+    const w   = Math.floor(Math.min(...[vv, iw, cc, sc].filter(Boolean)));
+
+    wrapper.style.width    = w + 'px';
     wrapper.style.maxWidth = w + 'px';
-    const fontSize = Math.round(w / 8 * 0.85);
+    const fontSize = Math.round(w / 8 * 0.82);
     document.documentElement.style.setProperty('--board-size', fontSize + 'px');
+
+    // Debug bar — remove once sizing is confirmed correct
+    const dbg = document.getElementById('size-dbg');
+    if (dbg) dbg.textContent =
+      `vv=${vv|0} iw=${iw} cc=${cc} sc=${sc} → board=${w}`;
   };
 
   clamp();
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', clamp);
   window.addEventListener('resize', clamp);
-  if (window.ResizeObserver) {
-    new ResizeObserver(clamp).observe(app);
-  }
 }
 
 // ── App bootstrap ─────────────────────────────────────────────────────────────
